@@ -1,10 +1,11 @@
 use std::fs::File;
-use std::io::{self, BufReader};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use ignore::WalkBuilder;
 use sha2::{Digest, Sha256};
+use lbug::{Database, Connection, SystemConfig, Value};
 
 #[derive(Parser, Debug)]
 #[command(name = "synapse")]
@@ -32,39 +33,79 @@ enum Commands {
     },
 }
 
+/// Computes the SHA-256 hash of a target file for incremental indexing detection.
 fn compute_sha256(path: &Path) -> io::Result<String> {
-    let mut file = BufReader::new(File::open(path)?);
+    let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
-    io::copy(&mut file, &mut hasher)?;
+    let mut buffer = [0; 8192];
+
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+
     Ok(hex::encode(hasher.finalize()))
 }
 
-fn detect_language(path: &Path) -> Option<&'static str> {
-    match path.extension()?.to_str()? {
-        "rs" => Some("Rust"),
-        "ts" | "tsx" => Some("TypeScript"),
-        "js" | "jsx" => Some("JavaScript"),
-        "py" => Some("Python"),
-        "go" => Some("Go"),
-        "java" => Some("Java"),
-        "c" | "h" => Some("C"),
-        "cpp" | "hpp" | "cc" | "cxx" => Some("C++"),
-        "rb" => Some("Ruby"),
-        "cs" => Some("CSharp"),
-        _ => None,
+/// Detects the programming language of a file based on its extension.
+fn detect_language(path: &Path) -> String {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("rs") => "Rust".to_string(),
+        Some("js") | Some("jsx") => "JavaScript".to_string(),
+        Some("ts") | Some("tsx") => "TypeScript".to_string(),
+        Some("py") => "Python".to_string(),
+        Some("go") => "Go".to_string(),
+        Some("cpp") | Some("cc") | Some("h") | Some("hpp") => "C++".to_string(),
+        Some("c") => "C".to_string(),
+        Some("java") => "Java".to_string(),
+        Some("html") => "HTML".to_string(),
+        Some("css") => "CSS".to_string(),
+        Some("md") => "Markdown".to_string(),
+        Some("json") => "JSON".to_string(),
+        _ => "Unknown".to_string(),
     }
 }
 
-fn main() {
+/// Initializes schema tables in LadybugDB. If tables already exist, errors are safely skipped.
+fn init_schema(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
+    let ddls = vec![
+        // Node Tables
+        "CREATE NODE TABLE File (path STRING, language STRING, file_size INT64, hash STRING, PRIMARY KEY (path))",
+        "CREATE NODE TABLE Symbol (id STRING, name STRING, kind STRING, start_line INT64, start_col INT64, end_line INT64, signature STRING, PRIMARY KEY (id))",
+        "CREATE NODE TABLE Chunk (id STRING, text STRING, embedding FLOAT[384], PRIMARY KEY (id))",
+        // Relationship Tables
+        "CREATE REL TABLE CONTAINS (FROM File TO Symbol, FROM Symbol TO Symbol)",
+        "CREATE REL TABLE IMPORTS (FROM File TO File)",
+        "CREATE REL TABLE CALLS (FROM Symbol TO Symbol, call_site_line INT64)",
+        "CREATE REL TABLE DOCUMENTED_BY (FROM File TO Chunk, FROM Symbol TO Chunk)"
+    ];
+
+    for ddl in ddls {
+        if let Err(e) = conn.query(ddl) {
+            let err_msg = e.to_string();
+            // Skip table creation failures due to table already existing in the database
+            if !err_msg.contains("already exists") && !err_msg.contains("Duplicate") {
+                return Err(Box::new(e));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Index { path, db, verbose } => {
+        Commands::Index { path, db: db_path, verbose } => {
             println!("==================================================");
-            println!("Synapse Indexer Initializing");
+            println!("⚡ Synapse Indexer Initializing");
             println!("==================================================");
             println!("Workspace Target : {}", path.display());
-            println!("Database Target  : {}", db.display());
+            println!("Database Target  : {}", db_path.display());
             println!("--------------------------------------------------");
 
             if !path.exists() {
@@ -72,65 +113,134 @@ fn main() {
                 std::process::exit(1);
             }
 
-            let mut file_count = 0u64;
+            // Ensure parent directory for database exists
+            if let Some(parent) = db_path.parent() {
+                if !parent.exists() {
+                    if let Err(err) = std::fs::create_dir_all(parent) {
+                        eprintln!("Error: Failed to create database path directory: {}", err);
+                        std::process::exit(1);
+                    }
+                }
+            }
+
+            // 1. Initialize Database
+            println!("📦 Connecting to LadybugDB...");
+            let db = match Database::new(&db_path, SystemConfig::default()) {
+                Ok(database) => database,
+                Err(err) => {
+                    eprintln!("Error: Failed to connect to LadybugDB at '{}': {}", db_path.display(), err);
+                    std::process::exit(1);
+                }
+            };
+
+            // 2. Establish Connection
+            let conn = match Connection::new(&db) {
+                Ok(connection) => connection,
+                Err(err) => {
+                    eprintln!("Error: Failed to open database connection: {}", err);
+                    std::process::exit(1);
+                }
+            };
+
+            // 3. Initialize Tables / Verify Schema
+            println!("🛠️  Verifying graph database schema...");
+            if let Err(err) = init_schema(&conn) {
+                eprintln!("Error: Failed to verify schema tables: {}", err);
+                std::process::exit(1);
+            }
+
+            // 4. Prepare File Upsert Statement
+            let mut prepared_file_upsert = match conn.prepare(
+                "MERGE (f:File {path: $path}) \
+                 ON CREATE SET f.language = $language, f.file_size = $file_size, f.hash = $hash \
+                 ON MATCH SET f.language = $language, f.file_size = $file_size, f.hash = $hash"
+            ) {
+                Ok(stmt) => stmt,
+                Err(err) => {
+                    eprintln!("Error: Failed to prepare Cypher upsert query: {}", err);
+                    std::process::exit(1);
+                }
+            };
+
+            println!("--------------------------------------------------");
+            println!("🔍 Traversing workspace & populating graph...");
+            println!("--------------------------------------------------");
+
+            let mut file_count = 0;
             let mut byte_count = 0u64;
 
-            let walker = WalkBuilder::new(&path).build();
+            // Build directory walker respecting .gitignore, hidden files, and default ignores
+            let walker = WalkBuilder::new(&path)
+                .hidden(false)
+                .build();
 
             for result in walker {
                 match result {
                     Ok(entry) => {
                         let file_path = entry.path();
-                        if !file_path.is_file() {
-                            continue;
-                        }
+                        if file_path.is_file() {
+                            // Extract path relative to root directory for consistent indexing
+                            let relative_path = file_path
+                                .strip_prefix(&path)
+                                .unwrap_or(file_path)
+                                .to_path_buf();
 
-                        let relative_path = file_path.strip_prefix(&path).unwrap_or(file_path);
-                        let metadata = match entry.metadata() {
-                            Ok(m) => m,
-                            Err(err) => {
-                                if verbose {
-                                    eprintln!("Warning: metadata for '{}': {}", file_path.display(), err);
-                                }
-                                continue;
-                            }
-                        };
+                            let relative_path_str = relative_path.to_string_lossy().to_string();
 
-                        let size = metadata.len();
-                        let language = detect_language(file_path);
+                            if let Ok(metadata) = entry.metadata() {
+                                let size = metadata.len();
+                                let lang = detect_language(file_path);
+                                
+                                // Generate hash footprint
+                                match compute_sha256(file_path) {
+                                    Ok(hash) => {
+                                        // Execute parameter-bound upsert directly to LadybugDB
+                                        let params: Vec<(&str, Value)> = vec![
+                                            ("path", Value::String(relative_path_str.clone())),
+                                            ("language", Value::String(lang.clone())),
+                                            ("file_size", Value::Int64(size as i64)),
+                                            ("hash", Value::String(hash.clone())),
+                                        ];
 
-                        match compute_sha256(file_path) {
-                            Ok(hash) => {
-                                file_count += 1;
-                                byte_count += size;
+                                        match conn.execute(&mut prepared_file_upsert, params) {
+                                            Ok(_) => {
+                                                file_count += 1;
+                                                byte_count += size;
 
-                                if verbose {
-                                    println!(
-                                        "Indexed: {} | {} | {} B | SHA-256: {}",
-                                        relative_path.display(),
-                                        language.unwrap_or("Unknown"),
-                                        size,
-                                        &hash[..8],
-                                    );
-                                }
-                            }
-                            Err(err) => {
-                                if verbose {
-                                    eprintln!("Warning: Failed to read '{}': {}", file_path.display(), err);
+                                                if verbose {
+                                                    println!(
+                                                        "DB Tracked: {} [{}] | Size: {} B | SHA-256: {}",
+                                                        relative_path_str,
+                                                        lang,
+                                                        size,
+                                                        &hash[..8]
+                                                    );
+                                                }
+                                            }
+                                            Err(err) => {
+                                                eprintln!("Error: Failed to index file '{}' in database: {}", relative_path_str, err);
+                                            }
+                                        }
+                                    }
+                                    Err(err) => {
+                                        if verbose {
+                                            eprintln!("Warning: Failed to read '{}': {}", file_path.display(), err);
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                     Err(err) => {
-                        eprintln!("Workspace traversal error: {}", err);
+                        eprintln!("Workspace Traversal Error: {}", err);
                     }
                 }
             }
 
             println!("--------------------------------------------------");
-            println!("Workspace traversal complete.");
-            println!("Total files tracked : {}", file_count);
-            println!("Aggregate data size : {:.2} MB", byte_count as f64 / 1_048_576.0);
+            println!("✅ Workspace traversal complete!");
+            println!("Total Files Loaded to LadybugDB: {}", file_count);
+            println!("Aggregate Data Size Managed    : {:.2} MB", (byte_count as f64) / 1024.0 / 1024.0);
             println!("==================================================");
         }
     }

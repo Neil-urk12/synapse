@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use ignore::WalkBuilder;
+use lbug::{Connection, Database, SystemConfig, Value};
 use sha2::{Digest, Sha256};
-use lbug::{Database, Connection, SystemConfig, Value};
 
 #[derive(Parser, Debug)]
 #[command(name = "synapse")]
@@ -85,9 +85,9 @@ fn init_schema(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
 
     for ddl in ddls {
         if let Err(e) = conn.query(ddl) {
-            let err_msg = e.to_string();
+            let err_msg = e.to_string().to_lowercase();
             // Skip table creation failures due to table already existing in the database
-            if !err_msg.contains("already exists") && !err_msg.contains("Duplicate") {
+            if !err_msg.contains("already exists") && !err_msg.contains("duplicate") {
                 return Err(Box::new(e));
             }
         }
@@ -100,7 +100,11 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Index { path, db: db_path, verbose } => {
+        Commands::Index {
+            path,
+            db: db_path,
+            verbose,
+        } => {
             println!("==================================================");
             println!("⚡ Synapse Indexer Initializing");
             println!("==================================================");
@@ -109,7 +113,10 @@ async fn main() {
             println!("--------------------------------------------------");
 
             if !path.exists() {
-                eprintln!("Error: Target workspace path '{}' does not exist.", path.display());
+                eprintln!(
+                    "Error: Target workspace path '{}' does not exist.",
+                    path.display()
+                );
                 std::process::exit(1);
             }
 
@@ -128,7 +135,11 @@ async fn main() {
             let db = match Database::new(&db_path, SystemConfig::default()) {
                 Ok(database) => database,
                 Err(err) => {
-                    eprintln!("Error: Failed to connect to LadybugDB at '{}': {}", db_path.display(), err);
+                    eprintln!(
+                        "Error: Failed to connect to LadybugDB at '{}': {}",
+                        db_path.display(),
+                        err
+                    );
                     std::process::exit(1);
                 }
             };
@@ -153,7 +164,7 @@ async fn main() {
             let mut prepared_file_upsert = match conn.prepare(
                 "MERGE (f:File {path: $path}) \
                  ON CREATE SET f.language = $language, f.file_size = $file_size, f.hash = $hash \
-                 ON MATCH SET f.language = $language, f.file_size = $file_size, f.hash = $hash"
+                 ON MATCH SET f.language = $language, f.file_size = $file_size, f.hash = $hash",
             ) {
                 Ok(stmt) => stmt,
                 Err(err) => {
@@ -170,9 +181,7 @@ async fn main() {
             let mut byte_count = 0u64;
 
             // Build directory walker respecting .gitignore, hidden files, and default ignores
-            let walker = WalkBuilder::new(&path)
-                .hidden(false)
-                .build();
+            let walker = WalkBuilder::new(&path).build();
 
             for result in walker {
                 match result {
@@ -190,7 +199,7 @@ async fn main() {
                             if let Ok(metadata) = entry.metadata() {
                                 let size = metadata.len();
                                 let lang = detect_language(file_path);
-                                
+
                                 // Generate hash footprint
                                 match compute_sha256(file_path) {
                                     Ok(hash) => {
@@ -224,7 +233,11 @@ async fn main() {
                                     }
                                     Err(err) => {
                                         if verbose {
-                                            eprintln!("Warning: Failed to read '{}': {}", file_path.display(), err);
+                                            eprintln!(
+                                                "Warning: Failed to read '{}': {}",
+                                                file_path.display(),
+                                                err
+                                            );
                                         }
                                     }
                                 }
@@ -240,7 +253,10 @@ async fn main() {
             println!("--------------------------------------------------");
             println!("✅ Workspace traversal complete!");
             println!("Total Files Loaded to LadybugDB: {}", file_count);
-            println!("Aggregate Data Size Managed    : {:.2} MB", (byte_count as f64) / 1024.0 / 1024.0);
+            println!(
+                "Aggregate Data Size Managed    : {:.2} MB",
+                (byte_count as f64) / 1024.0 / 1024.0
+            );
             println!("==================================================");
         }
     }

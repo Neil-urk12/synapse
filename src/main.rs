@@ -180,7 +180,7 @@ async fn main() {
             let mut file_count = 0;
             let mut byte_count = 0u64;
 
-            // Build directory walker respecting .gitignore, hidden files, and default ignores
+            // Build directory walker respecting .gitignore, default ignores, and skipping hidden files/folders (e.g. .git/) by default
             let walker = WalkBuilder::new(&path).build();
 
             for result in walker {

@@ -8,6 +8,7 @@ Synapse is a high-performance data integration layer built with **Rust** and pow
 - **Graph + Vector + SQL**: Query, traverse, and embed in a single unified engine.
 - **Embedded**: Runs in-process — no separate database server to deploy or manage.
 - **Type-safe**: Strongly-typed Rust APIs with compile-time query validation where possible.
+- **Workspace Traversal**: Efficiently walks target directories, respecting `.gitignore` rules and skipping hidden files/folders (such as `.git/`) by default.
 
 ## Tech Stack
 

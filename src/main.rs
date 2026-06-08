@@ -1,3 +1,5 @@
+pub mod parser;
+
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -122,7 +124,7 @@ async fn main() {
 
             // Ensure parent directory for database exists
             if let Some(parent) = db_path.parent() {
-                if !parent.exists() {
+                if !parent.as_os_str().is_empty() && !parent.exists() {
                     if let Err(err) = std::fs::create_dir_all(parent) {
                         eprintln!("Error: Failed to create database path directory: {}", err);
                         std::process::exit(1);
@@ -160,7 +162,7 @@ async fn main() {
                 std::process::exit(1);
             }
 
-            // 4. Prepare File Upsert Statement
+            // 4. Prepare Statements
             let mut prepared_file_upsert = match conn.prepare(
                 "MERGE (f:File {path: $path}) \
                  ON CREATE SET f.language = $language, f.file_size = $file_size, f.hash = $hash \
@@ -168,7 +170,60 @@ async fn main() {
             ) {
                 Ok(stmt) => stmt,
                 Err(err) => {
-                    eprintln!("Error: Failed to prepare Cypher upsert query: {}", err);
+                    eprintln!("Error: Failed to prepare File upsert query: {}", err);
+                    std::process::exit(1);
+                }
+            };
+
+            let mut prepared_check_hash = match conn.prepare(
+                "MATCH (f:File {path: $path}) RETURN f.hash"
+            ) {
+                Ok(stmt) => stmt,
+                Err(err) => {
+                    eprintln!("Error: Failed to prepare hash check query: {}", err);
+                    std::process::exit(1);
+                }
+            };
+
+            let mut prepared_delete_symbols = match conn.prepare(
+                "MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol) \
+                 DETACH DELETE s"
+            ) {
+                Ok(stmt) => stmt,
+                Err(err) => {
+                    eprintln!("Error: Failed to prepare symbol cleanup query: {}", err);
+                    std::process::exit(1);
+                }
+            };
+
+            let mut prepared_symbol_create = match conn.prepare(
+                "MERGE (s:Symbol {id: $id}) \
+                 ON CREATE SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature \
+                 ON MATCH SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature"
+            ) {
+                Ok(stmt) => stmt,
+                Err(err) => {
+                    eprintln!("Error: Failed to prepare symbol create query: {}", err);
+                    std::process::exit(1);
+                }
+            };
+
+            let mut prepared_containment_file = match conn.prepare(
+                "MATCH (f:File {path: $from_id}), (s:Symbol {id: $to_id}) CREATE (f)-[:CONTAINS]->(s)"
+            ) {
+                Ok(stmt) => stmt,
+                Err(err) => {
+                    eprintln!("Error: Failed to prepare File containment query: {}", err);
+                    std::process::exit(1);
+                }
+            };
+
+            let mut prepared_containment_symbol = match conn.prepare(
+                "MATCH (p:Symbol {id: $from_id}), (c:Symbol {id: $to_id}) CREATE (p)-[:CONTAINS]->(c)"
+            ) {
+                Ok(stmt) => stmt,
+                Err(err) => {
+                    eprintln!("Error: Failed to prepare Symbol containment query: {}", err);
                     std::process::exit(1);
                 }
             };
@@ -178,9 +233,9 @@ async fn main() {
             println!("--------------------------------------------------");
 
             let mut file_count = 0;
+            let mut skip_count = 0;
             let mut byte_count = 0u64;
 
-            // Build directory walker respecting .gitignore, default ignores, and skipping hidden files/folders (e.g. .git/) by default
             let walker = WalkBuilder::new(&path).build();
 
             for result in walker {
@@ -188,7 +243,13 @@ async fn main() {
                     Ok(entry) => {
                         let file_path = entry.path();
                         if file_path.is_file() {
-                            // Extract path relative to root directory for consistent indexing
+                            // Skip the database storage file and its companion WAL/temp files
+                            let db_name = db_path.file_name().and_then(|n| n.to_str()).unwrap_or("synapse.lbug");
+                            let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                            if file_name == db_name || file_name.starts_with(&format!("{}.", db_name)) {
+                                continue;
+                            }
+
                             let relative_path = file_path
                                 .strip_prefix(&path)
                                 .unwrap_or(file_path)
@@ -200,10 +261,33 @@ async fn main() {
                                 let size = metadata.len();
                                 let lang = detect_language(file_path);
 
-                                // Generate hash footprint
                                 match compute_sha256(file_path) {
                                     Ok(hash) => {
-                                        // Execute parameter-bound upsert directly to LadybugDB
+                                        // A. Check if file hash exists and matches
+                                        let check_params: Vec<(&str, Value)> = vec![
+                                            ("path", Value::String(relative_path_str.clone())),
+                                        ];
+
+                                        let mut matches = false;
+                                        if let Ok(mut query_result) = conn.execute(&mut prepared_check_hash, check_params) {
+                                            if let Some(row) = query_result.next() {
+                                                if let Some(Value::String(stored_hash)) = row.first() {
+                                                    if stored_hash == &hash {
+                                                        matches = true;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if matches {
+                                            skip_count += 1;
+                                            if verbose {
+                                                println!("Skipped (unchanged): {}", relative_path_str);
+                                            }
+                                            continue;
+                                        }
+
+                                        // B. Upsert File metadata in DB
                                         let params: Vec<(&str, Value)> = vec![
                                             ("path", Value::String(relative_path_str.clone())),
                                             ("language", Value::String(lang.clone())),
@@ -216,13 +300,64 @@ async fn main() {
                                                 file_count += 1;
                                                 byte_count += size;
 
+                                                // C. Clean up old symbols and contains edges for this file
+                                                let cleanup_params: Vec<(&str, Value)> = vec![
+                                                    ("path", Value::String(relative_path_str.clone())),
+                                                ];
+                                                if let Err(err) = conn.execute(&mut prepared_delete_symbols, cleanup_params) {
+                                                    eprintln!("Warning: Cleanup failed for '{}': {}", relative_path_str, err);
+                                                }
+
+                                                // D. Parse file AST content
+                                                let mut parse_success = false;
+                                                let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                                                let is_supported = matches!(ext.as_str(), "rs" | "js" | "jsx" | "ts" | "tsx");
+
+                                                if is_supported {
+                                                    if let Ok(mut file_handle) = std::fs::File::open(file_path) {
+                                                        let mut content = String::new();
+                                                        if file_handle.read_to_string(&mut content).is_ok() {
+                                                            let (nodes, edges) = parser::ASTParser::parse_file(&relative_path, &content);
+
+                                                            // E. Upsert Symbol nodes
+                                                            for node in nodes {
+                                                                let node_params: Vec<(&str, Value)> = vec![
+                                                                    ("id", Value::String(node.id)),
+                                                                    ("name", Value::String(node.name)),
+                                                                    ("kind", Value::String(node.kind)),
+                                                                    ("start_line", Value::Int64(node.start_line as i64)),
+                                                                    ("start_col", Value::Int64(node.start_col as i64)),
+                                                                    ("end_line", Value::Int64(node.end_line as i64)),
+                                                                    ("signature", Value::String(node.signature)),
+                                                                ];
+                                                                let _ = conn.execute(&mut prepared_symbol_create, node_params);
+                                                            }
+
+                                                            // F. Insert CONTAINS relationships
+                                                            for edge in edges {
+                                                                let edge_params: Vec<(&str, Value)> = vec![
+                                                                    ("from_id", Value::String(edge.from_id.clone())),
+                                                                    ("to_id", Value::String(edge.to_id)),
+                                                                ];
+                                                                if edge.from_id == relative_path_str {
+                                                                    let _ = conn.execute(&mut prepared_containment_file, edge_params);
+                                                                } else {
+                                                                    let _ = conn.execute(&mut prepared_containment_symbol, edge_params);
+                                                                }
+                                                            }
+                                                            parse_success = true;
+                                                        }
+                                                    }
+                                                }
+
                                                 if verbose {
                                                     println!(
-                                                        "DB Tracked: {} [{}] | Size: {} B | SHA-256: {}",
+                                                        "Indexed: {} [{}] | Size: {} B | SHA-256: {} (parsed: {})",
                                                         relative_path_str,
                                                         lang,
                                                         size,
-                                                        &hash[..8]
+                                                        &hash[..8],
+                                                        parse_success
                                                     );
                                                 }
                                             }
@@ -233,11 +368,7 @@ async fn main() {
                                     }
                                     Err(err) => {
                                         if verbose {
-                                            eprintln!(
-                                                "Warning: Failed to read '{}': {}",
-                                                file_path.display(),
-                                                err
-                                            );
+                                            eprintln!("Warning: Failed to read '{}': {}", file_path.display(), err);
                                         }
                                     }
                                 }
@@ -252,7 +383,8 @@ async fn main() {
 
             println!("--------------------------------------------------");
             println!("✅ Workspace traversal complete!");
-            println!("Total Files Loaded to LadybugDB: {}", file_count);
+            println!("Total Files Indexed/Updated    : {}", file_count);
+            println!("Total Files Skipped (Unchanged): {}", skip_count);
             println!(
                 "Aggregate Data Size Managed    : {:.2} MB",
                 (byte_count as f64) / 1024.0 / 1024.0

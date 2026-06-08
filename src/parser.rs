@@ -166,21 +166,13 @@ impl ASTParser {
                     signature,
                 });
 
-                if current_parent_id.is_none() {
-                    edges.push(EdgeData {
-                        from_id: file_path.to_string(),
-                        to_id: symbol_id.clone(),
-                        edge_type: "CONTAINS".to_string(),
-                        line: start_point.row + 1,
-                    });
-                } else if let Some(ref parent) = current_parent_id {
-                    edges.push(EdgeData {
-                        from_id: parent.clone(),
-                        to_id: symbol_id.clone(),
-                        edge_type: "CONTAINS".to_string(),
-                        line: start_point.row + 1,
-                    });
-                }
+                let from_id = current_parent_id.as_deref().unwrap_or(file_path).to_string();
+                edges.push(EdgeData {
+                    from_id,
+                    to_id: symbol_id.clone(),
+                    edge_type: "CONTAINS".to_string(),
+                    line: start_point.row + 1,
+                });
 
                 active_parent = Some(symbol_id);
             }
@@ -210,6 +202,18 @@ impl ASTParser {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    /// Look up a node by its stable composite ID. Panics with a descriptive message if not found.
+    fn node_by_id<'a>(nodes: &'a [NodeData], id: &str) -> &'a NodeData {
+        nodes.iter().find(|n| n.id == id)
+            .unwrap_or_else(|| panic!("node with id '{id}' not found in: {:#?}", nodes.iter().map(|n| &n.id).collect::<Vec<_>>()))
+    }
+
+    /// Look up an edge by its stable from/to pair. Panics with a descriptive message if not found.
+    fn edge_by_endpoints<'a>(edges: &'a [EdgeData], from: &str, to: &str) -> &'a EdgeData {
+        edges.iter().find(|e| e.from_id == from && e.to_id == to)
+            .unwrap_or_else(|| panic!("edge '{from}'->'{to}' not found in: {:#?}", edges.iter().map(|e| (&e.from_id, &e.to_id)).collect::<Vec<_>>()))
+    }
 
     #[test]
     fn test_rust_parsing() {
@@ -267,42 +271,26 @@ mod tests {
             ]
         );
 
-        // Verify some specific nodes
-        assert_eq!(nodes[0].id, "test.rs::MyEnum");
-        assert_eq!(nodes[1].id, "test.rs::MyTrait");
-        assert_eq!(nodes[2].id, "test.rs::MyTrait::trait_func");
-        assert_eq!(nodes[3].id, "test.rs::MyStruct");
-        assert_eq!(nodes[4].id, "test.rs::impl MyStruct");
-        assert_eq!(nodes[5].id, "test.rs::impl MyStruct::run");
-        assert_eq!(nodes[6].id, "test.rs::impl MyTrait for MyStruct");
-        assert_eq!(nodes[7].id, "test.rs::impl MyTrait for MyStruct::trait_func");
+        // Verify specific nodes by stable ID (order-independent)
+        assert_eq!(node_by_id(&nodes, "test.rs::MyEnum").kind, "Enum");
+        assert_eq!(node_by_id(&nodes, "test.rs::MyTrait").kind, "Interface");
+        assert_eq!(node_by_id(&nodes, "test.rs::MyTrait::trait_func").kind, "Function");
+        assert_eq!(node_by_id(&nodes, "test.rs::MyStruct").kind, "Struct");
+        assert_eq!(node_by_id(&nodes, "test.rs::impl MyStruct").kind, "Implementation");
+        assert_eq!(node_by_id(&nodes, "test.rs::impl MyStruct::run").kind, "Function");
+        assert_eq!(node_by_id(&nodes, "test.rs::impl MyTrait for MyStruct").kind, "Implementation");
+        assert_eq!(node_by_id(&nodes, "test.rs::impl MyTrait for MyStruct::trait_func").kind, "Function");
 
-        // Verify edges
+        // Verify edges by stable endpoints (order-independent)
         assert_eq!(edges.len(), 8);
-        assert_eq!(edges[0].edge_type, "CONTAINS");
-        assert_eq!(edges[0].from_id, "test.rs");
-        assert_eq!(edges[0].to_id, "test.rs::MyEnum");
-        
-        assert_eq!(edges[1].from_id, "test.rs");
-        assert_eq!(edges[1].to_id, "test.rs::MyTrait");
-
-        assert_eq!(edges[2].from_id, "test.rs::MyTrait");
-        assert_eq!(edges[2].to_id, "test.rs::MyTrait::trait_func");
-
-        assert_eq!(edges[3].from_id, "test.rs");
-        assert_eq!(edges[3].to_id, "test.rs::MyStruct");
-
-        assert_eq!(edges[4].from_id, "test.rs");
-        assert_eq!(edges[4].to_id, "test.rs::impl MyStruct");
-
-        assert_eq!(edges[5].from_id, "test.rs::impl MyStruct");
-        assert_eq!(edges[5].to_id, "test.rs::impl MyStruct::run");
-
-        assert_eq!(edges[6].from_id, "test.rs");
-        assert_eq!(edges[6].to_id, "test.rs::impl MyTrait for MyStruct");
-
-        assert_eq!(edges[7].from_id, "test.rs::impl MyTrait for MyStruct");
-        assert_eq!(edges[7].to_id, "test.rs::impl MyTrait for MyStruct::trait_func");
+        assert_eq!(edge_by_endpoints(&edges, "test.rs", "test.rs::MyEnum").edge_type, "CONTAINS");
+        edge_by_endpoints(&edges, "test.rs", "test.rs::MyTrait");
+        edge_by_endpoints(&edges, "test.rs::MyTrait", "test.rs::MyTrait::trait_func");
+        edge_by_endpoints(&edges, "test.rs", "test.rs::MyStruct");
+        edge_by_endpoints(&edges, "test.rs", "test.rs::impl MyStruct");
+        edge_by_endpoints(&edges, "test.rs::impl MyStruct", "test.rs::impl MyStruct::run");
+        edge_by_endpoints(&edges, "test.rs", "test.rs::impl MyTrait for MyStruct");
+        edge_by_endpoints(&edges, "test.rs::impl MyTrait for MyStruct", "test.rs::impl MyTrait for MyStruct::trait_func");
     }
 
     #[test]

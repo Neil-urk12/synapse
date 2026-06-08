@@ -209,7 +209,7 @@ async fn main() {
             };
 
             let mut prepared_containment_file = match conn.prepare(
-                "MATCH (f:File {path: $from_id}), (s:Symbol {id: $to_id}) CREATE (f)-[:CONTAINS]->(s)"
+                "MATCH (f:File {path: $from_id}), (s:Symbol {id: $to_id}) MERGE (f)-[:CONTAINS]->(s)"
             ) {
                 Ok(stmt) => stmt,
                 Err(err) => {
@@ -219,7 +219,7 @@ async fn main() {
             };
 
             let mut prepared_containment_symbol = match conn.prepare(
-                "MATCH (p:Symbol {id: $from_id}), (c:Symbol {id: $to_id}) CREATE (p)-[:CONTAINS]->(c)"
+                "MATCH (p:Symbol {id: $from_id}), (c:Symbol {id: $to_id}) MERGE (p)-[:CONTAINS]->(c)"
             ) {
                 Ok(stmt) => stmt,
                 Err(err) => {
@@ -236,6 +236,11 @@ async fn main() {
             let mut skip_count = 0;
             let mut byte_count = 0u64;
 
+            // Resolve the absolute database path once before the walk loop.
+            // Handles first-run where the DB file does not yet exist (canonicalize falls back to cwd join).
+            let abs_db_path = db_path.canonicalize()
+                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(&db_path));
+
             let walker = WalkBuilder::new(&path).build();
 
             for result in walker {
@@ -243,10 +248,11 @@ async fn main() {
                     Ok(entry) => {
                         let file_path = entry.path();
                         if file_path.is_file() {
-                            // Skip the database storage file and its companion WAL/temp files
-                            let db_name = db_path.file_name().and_then(|n| n.to_str()).unwrap_or("synapse.lbug");
-                            let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                            if file_name == db_name || file_name.starts_with(&format!("{}.", db_name)) {
+                            // Skip the database storage file and its companion WAL/temp files.
+                            // Use canonical full-path comparison to avoid false matches on same-named files in subdirectories.
+                            let abs_file = file_path.canonicalize().unwrap_or_else(|_| file_path.to_path_buf());
+                            let abs_db_str = abs_db_path.to_string_lossy();
+                            if abs_file == abs_db_path || abs_file.to_string_lossy().starts_with(format!("{}.", abs_db_str).as_str()) {
                                 continue;
                             }
 
@@ -306,6 +312,9 @@ async fn main() {
                                                 ];
                                                 if let Err(err) = conn.execute(&mut prepared_delete_symbols, cleanup_params) {
                                                     eprintln!("Warning: Cleanup failed for '{}': {}", relative_path_str, err);
+                                                    // Do not proceed with re-insertion into a partially-cleaned state,
+                                                    // as CREATE edges would produce duplicates.
+                                                    continue;
                                                 }
 
                                                 // D. Parse file AST content
@@ -320,7 +329,9 @@ async fn main() {
                                                             let (nodes, edges) = parser::ASTParser::parse_file(&relative_path, &content);
 
                                                             // E. Upsert Symbol nodes
+                                                            parse_success = true; // assume success; error handlers below will flip this
                                                             for node in nodes {
+                                                                let node_id = node.id.clone();
                                                                 let node_params: Vec<(&str, Value)> = vec![
                                                                     ("id", Value::String(node.id)),
                                                                     ("name", Value::String(node.name)),
@@ -330,22 +341,32 @@ async fn main() {
                                                                     ("end_line", Value::Int64(node.end_line as i64)),
                                                                     ("signature", Value::String(node.signature)),
                                                                 ];
-                                                                let _ = conn.execute(&mut prepared_symbol_create, node_params);
+                                                                if let Err(err) = conn.execute(&mut prepared_symbol_create, node_params) {
+                                                                    parse_success = false;
+                                                                    if verbose {
+                                                                        eprintln!("Warning: Failed to insert symbol '{}': {}", node_id, err);
+                                                                    }
+                                                                }
                                                             }
 
-                                                            // F. Insert CONTAINS relationships
+                                                            // F. Upsert CONTAINS relationships
                                                             for edge in edges {
                                                                 let edge_params: Vec<(&str, Value)> = vec![
                                                                     ("from_id", Value::String(edge.from_id.clone())),
-                                                                    ("to_id", Value::String(edge.to_id)),
+                                                                    ("to_id", Value::String(edge.to_id.clone())),
                                                                 ];
-                                                                if edge.from_id == relative_path_str {
-                                                                    let _ = conn.execute(&mut prepared_containment_file, edge_params);
+                                                                let result = if edge.from_id == relative_path_str {
+                                                                    conn.execute(&mut prepared_containment_file, edge_params)
                                                                 } else {
-                                                                    let _ = conn.execute(&mut prepared_containment_symbol, edge_params);
+                                                                    conn.execute(&mut prepared_containment_symbol, edge_params)
+                                                                };
+                                                                if let Err(err) = result {
+                                                                    parse_success = false;
+                                                                    if verbose {
+                                                                        eprintln!("Warning: Failed to insert edge '{}'->'{}': {}", edge.from_id, edge.to_id, err);
+                                                                    }
                                                                 }
                                                             }
-                                                            parse_success = true;
                                                         }
                                                     }
                                                 }

@@ -27,7 +27,14 @@ pub fn run_query_internal(
     let mut rows = Vec::new();
 
     for row in result {
-        let row_strs: Vec<String> = row.iter().map(|val| val.to_string()).collect();
+        let row_strs: Vec<String> = row
+            .iter()
+            .map(|val| {
+                val.to_string()
+                    .replace('\n', "\\n")
+                    .replace('\r', "\\r")
+            })
+            .collect();
         rows.push(row_strs);
     }
 
@@ -195,7 +202,7 @@ pub struct ContainedSymbolInfo {
 }
 
 pub fn fetch_contained_symbols(conn: &Connection, file_path: &str) -> Result<Vec<ContainedSymbolInfo>, Box<dyn std::error::Error>> {
-    let mut stmt = conn.prepare("MATCH (f:File {path: $path})-[:CONTAINS]->(s:Symbol) RETURN s.id, s.name, s.kind, s.signature")?;
+    let mut stmt = conn.prepare("MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol) RETURN s.id, s.name, s.kind, s.signature")?;
     let query_res = conn.execute(&mut stmt, vec![("path", Value::String(file_path.to_string()))])?;
     let mut symbols = Vec::new();
     for row in query_res {
@@ -237,6 +244,9 @@ pub fn run_context_internal(
     format: &str,
     writer: &mut dyn std::io::Write,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if symbol_name.is_some() && file_path.is_some() {
+        return Err("Options --symbol and --file are mutually exclusive".into());
+    }
     if symbol_name.is_none() && file_path.is_none() {
         return Err("Either --symbol or --file must be specified".into());
     }
@@ -245,30 +255,53 @@ pub fn run_context_internal(
     let mut target_file = None;
 
     if let Some(sym) = symbol_name {
-        // Fetch symbols
-        let mut all_symbols = Vec::new();
-        let query_res = conn.query("MATCH (s:Symbol) RETURN s.id, s.name, s.kind, s.start_line, s.end_line, s.signature")?;
-        for row in query_res {
-            if let (
-                Some(Value::String(id)),
-                Some(Value::String(name)),
-                Some(Value::String(kind)),
-                Some(Value::Int64(sl)),
-                Some(Value::Int64(el)),
-                Some(Value::String(sig)),
-            ) = (row.first(), row.get(1), row.get(2), row.get(3), row.get(4), row.get(5)) {
-                all_symbols.push(SymbolInfo {
-                    id: id.clone(),
-                    name: name.clone(),
-                    kind: kind.clone(),
-                    start_line: *sl as usize,
-                    end_line: *el as usize,
-                    signature: sig.clone(),
-                });
+        let mut candidates = Vec::new();
+        if fuzzy {
+            let mut stmt = conn.prepare("MATCH (s:Symbol) WHERE LOWER(s.name) CONTAINS LOWER($target) RETURN s.id, s.name, s.kind, s.start_line, s.end_line, s.signature")?;
+            let query_res = conn.execute(&mut stmt, vec![("target", Value::String(sym.to_string()))])?;
+            for row in query_res {
+                if let (
+                    Some(Value::String(id)),
+                    Some(Value::String(name)),
+                    Some(Value::String(kind)),
+                    Some(Value::Int64(sl)),
+                    Some(Value::Int64(el)),
+                    Some(Value::String(sig)),
+                ) = (row.first(), row.get(1), row.get(2), row.get(3), row.get(4), row.get(5)) {
+                    candidates.push(SymbolInfo {
+                        id: id.clone(),
+                        name: name.clone(),
+                        kind: kind.clone(),
+                        start_line: *sl as usize,
+                        end_line: *el as usize,
+                        signature: sig.clone(),
+                    });
+                }
+            }
+        } else {
+            let mut stmt = conn.prepare("MATCH (s:Symbol {name: $target}) RETURN s.id, s.name, s.kind, s.start_line, s.end_line, s.signature")?;
+            let query_res = conn.execute(&mut stmt, vec![("target", Value::String(sym.to_string()))])?;
+            for row in query_res {
+                if let (
+                    Some(Value::String(id)),
+                    Some(Value::String(name)),
+                    Some(Value::String(kind)),
+                    Some(Value::Int64(sl)),
+                    Some(Value::Int64(el)),
+                    Some(Value::String(sig)),
+                ) = (row.first(), row.get(1), row.get(2), row.get(3), row.get(4), row.get(5)) {
+                    candidates.push(SymbolInfo {
+                        id: id.clone(),
+                        name: name.clone(),
+                        kind: kind.clone(),
+                        start_line: *sl as usize,
+                        end_line: *el as usize,
+                        signature: sig.clone(),
+                    });
+                }
             }
         }
 
-        let candidates = resolve_symbol_candidates(sym, fuzzy, &all_symbols);
         if candidates.is_empty() {
             return Err(format!("Symbol '{}' not found", sym).into());
         }
@@ -281,19 +314,31 @@ pub fn run_context_internal(
         }
         target_symbol = Some(candidates[0].clone());
     } else if let Some(fl) = file_path {
-        // Fetch files
-        let mut all_files = Vec::new();
-        let query_res = conn.query("MATCH (f:File) RETURN f.path, f.language")?;
-        for row in query_res {
-            if let (Some(Value::String(path)), Some(Value::String(lang))) = (row.first(), row.get(1)) {
-                all_files.push(FileInfo {
-                    path: path.clone(),
-                    language: lang.clone(),
-                });
+        let mut candidates = Vec::new();
+        if fuzzy {
+            let mut stmt = conn.prepare("MATCH (f:File) WHERE LOWER(f.path) CONTAINS LOWER($target) RETURN f.path, f.language")?;
+            let query_res = conn.execute(&mut stmt, vec![("target", Value::String(fl.to_string()))])?;
+            for row in query_res {
+                if let (Some(Value::String(path)), Some(Value::String(lang))) = (row.first(), row.get(1)) {
+                    candidates.push(FileInfo {
+                        path: path.clone(),
+                        language: lang.clone(),
+                    });
+                }
+            }
+        } else {
+            let mut stmt = conn.prepare("MATCH (f:File {path: $target}) RETURN f.path, f.language")?;
+            let query_res = conn.execute(&mut stmt, vec![("target", Value::String(fl.to_string()))])?;
+            for row in query_res {
+                if let (Some(Value::String(path)), Some(Value::String(lang))) = (row.first(), row.get(1)) {
+                    candidates.push(FileInfo {
+                        path: path.clone(),
+                        language: lang.clone(),
+                    });
+                }
             }
         }
 
-        let candidates = resolve_file_candidates(fl, fuzzy, &all_files);
         if candidates.is_empty() {
             return Err(format!("File '{}' not found", fl).into());
         }
@@ -365,13 +410,29 @@ pub fn run_context_internal(
             writeln!(writer, "\n## Signature\n`{}`", sym.signature)?;
             if let Some(ref p) = file_path_to_read {
                 writeln!(writer, "\n## Source Code ({}:{}-{})", p, sym.start_line, sym.end_line)?;
-                let syntax = if p.ends_with(".rs") { "rust" } else { "typescript" };
+                let syntax = if p.ends_with(".rs") {
+                    "rust"
+                } else if p.ends_with(".js") || p.ends_with(".jsx") {
+                    "javascript"
+                } else if p.ends_with(".ts") || p.ends_with(".tsx") {
+                    "typescript"
+                } else {
+                    "text"
+                };
                 writeln!(writer, "```{}\n{}\n```", syntax, payload.source_code)?;
             }
         } else if let Some(ref fl) = payload.file {
             writeln!(writer, "# Context: {} ({})", fl.path, fl.language)?;
             writeln!(writer, "\n## Source Code ({})", fl.path)?;
-            let syntax = if fl.path.ends_with(".rs") { "rust" } else { "typescript" };
+            let syntax = if fl.path.ends_with(".rs") {
+                "rust"
+            } else if fl.path.ends_with(".js") || fl.path.ends_with(".jsx") {
+                "javascript"
+            } else if fl.path.ends_with(".ts") || fl.path.ends_with(".tsx") {
+                "typescript"
+            } else {
+                "text"
+            };
             writeln!(writer, "```{}\n{}\n```", syntax, payload.source_code)?;
         }
 
@@ -465,8 +526,13 @@ pub fn format_ascii_table(headers: &[String], rows: &[Vec<String>]) -> String {
 
     for row in rows {
         out.push('|');
-        for (i, cell) in row.iter().enumerate() {
+        for (i, cell) in row.iter().take(headers.len()).enumerate() {
             out.push_str(&format!(" {:<width$} |", cell, width = col_widths[i]));
+        }
+        if row.len() < headers.len() {
+            for i in row.len()..headers.len() {
+                out.push_str(&format!(" {:<width$} |", "", width = col_widths[i]));
+            }
         }
         out.push('\n');
     }

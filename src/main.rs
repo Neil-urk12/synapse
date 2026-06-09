@@ -1,5 +1,6 @@
 pub mod linker;
 pub mod parser;
+pub mod query_cli;
 
 use std::fs::File;
 use std::io::{self, Read};
@@ -33,6 +34,37 @@ enum Commands {
         /// Enable verbose logging output
         #[arg(short, long)]
         verbose: bool,
+    },
+    /// Execute a raw Cypher query against the code graph
+    Query {
+        /// The Cypher query string to execute
+        query: String,
+
+        /// Path to the LadybugDB database storage file
+        #[arg(short, long, default_value = "synapse.lbug")]
+        db: PathBuf,
+    },
+    /// Retrieve and format code intelligence context for a symbol or file
+    Context {
+        /// Target symbol name
+        #[arg(short, long)]
+        symbol: Option<String>,
+
+        /// Target file path
+        #[arg(short, long)]
+        file: Option<String>,
+
+        /// Enable fuzzy/case-insensitive substring search in Rust
+        #[arg(short, long)]
+        fuzzy: bool,
+
+        /// Output format: markdown or json
+        #[arg(short, long, default_value = "markdown")]
+        format: String,
+
+        /// Path to the LadybugDB database storage file
+        #[arg(short, long, default_value = "synapse.lbug")]
+        db: PathBuf,
     },
 }
 
@@ -542,6 +574,18 @@ async fn main() {
             // 5. Run Global Linker
             if let Err(err) = linker::run_linker(&conn, verbose) {
                 eprintln!("Error: Global linking phase failed: {}", err);
+                std::process::exit(1);
+            }
+        }
+        Commands::Query { query, db } => {
+            if let Err(err) = query_cli::handle_query(&query, &db) {
+                eprintln!("Error: {}", err);
+                std::process::exit(1);
+            }
+        }
+        Commands::Context { symbol, file, fuzzy, format, db } => {
+            if let Err(err) = query_cli::handle_context(symbol.as_deref(), file.as_deref(), fuzzy, &format, &db) {
+                eprintln!("Error: {}", err);
                 std::process::exit(1);
             }
         }

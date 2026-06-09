@@ -7,11 +7,114 @@ pub mod query_cli;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-
 use clap::{Parser, Subcommand};
 use ignore::WalkBuilder;
 use lbug::{Connection, Database, SystemConfig, Value};
 use sha2::{Digest, Sha256};
+
+use std::collections::HashMap;
+
+
+pub struct ParsedPayload {
+    pub relative_path: String,
+    pub language: String,
+    pub size: u64,
+    pub hash: String,
+    pub analysis: Option<crate::parser::FileAnalysis>,
+    pub content: Option<String>,
+}
+
+fn load_all_hashes(conn: &Connection) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
+    let mut cache = HashMap::new();
+    let mut stmt = conn.prepare("MATCH (f:File) RETURN f.path, f.hash")?;
+    let result = conn.execute(&mut stmt, vec![])?;
+    for row in result {
+        if let (Some(Value::String(path)), Some(Value::String(hash))) = (row.first(), row.get(1)) {
+            cache.insert(path.clone(), hash.clone());
+        }
+    }
+    Ok(cache)
+}
+
+pub struct PreparedStatements<'a> {
+    pub file_upsert: &'a mut lbug::PreparedStatement,
+    pub delete_symbols: &'a mut lbug::PreparedStatement,
+    pub symbol_create: &'a mut lbug::PreparedStatement,
+    pub containment_file: &'a mut lbug::PreparedStatement,
+    pub containment_symbol: &'a mut lbug::PreparedStatement,
+}
+
+pub fn write_payload_to_db(
+    conn: &Connection,
+    payload: ParsedPayload,
+    stmts: &mut PreparedStatements,
+    verbose: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let raw_imports_str = if let Some(ref analysis) = payload.analysis {
+        serde_json::to_string(&analysis.imports).unwrap_or_else(|_| "[]".to_string())
+    } else {
+        "[]".to_string()
+    };
+
+    let file_params: Vec<(&str, Value)> = vec![
+        ("path", Value::String(payload.relative_path.clone())),
+        ("language", Value::String(payload.language.clone())),
+        ("file_size", Value::Int64(payload.size as i64)),
+        ("hash", Value::String(payload.hash.clone())),
+        ("raw_imports", Value::String(raw_imports_str)),
+    ];
+    conn.execute(stmts.file_upsert, file_params)?;
+
+    let cleanup_params: Vec<(&str, Value)> = vec![("path", Value::String(payload.relative_path.clone()))];
+    conn.execute(stmts.delete_symbols, cleanup_params)?;
+
+    if let (Some(analysis), Some(content)) = (payload.analysis, payload.content) {
+        for node in &analysis.nodes {
+            let mut raw_calls_str = "[]".to_string();
+            let symbol_calls: Vec<crate::parser::RawCall> = analysis
+                .calls
+                .iter()
+                .filter(|c| c.line >= node.start_line && c.line <= node.end_line)
+                .cloned()
+                .collect();
+            if let Ok(serialized) = serde_json::to_string(&symbol_calls) {
+                raw_calls_str = serialized;
+            }
+
+            let node_params: Vec<(&str, Value)> = vec![
+                ("id", Value::String(node.id.clone())),
+                ("name", Value::String(node.name.clone())),
+                ("kind", Value::String(node.kind.clone())),
+                ("start_line", Value::Int64(node.start_line as i64)),
+                ("start_col", Value::Int64(node.start_col as i64)),
+                ("end_line", Value::Int64(node.end_line as i64)),
+                ("signature", Value::String(node.signature.clone())),
+                ("raw_calls", Value::String(raw_calls_str)),
+            ];
+            conn.execute(stmts.symbol_create, node_params)?;
+        }
+
+        for edge in &analysis.edges {
+            let edge_params: Vec<(&str, Value)> = vec![
+                ("from_id", Value::String(edge.from_id.clone())),
+                ("to_id", Value::String(edge.to_id.clone())),
+            ];
+            if edge.from_id == payload.relative_path {
+                conn.execute(stmts.containment_file, edge_params)?;
+            } else {
+                conn.execute(stmts.containment_symbol, edge_params)?;
+            };
+        }
+
+        let chunks = crate::chunker::chunk_source(&payload.relative_path, &content, &analysis.nodes);
+        crate::chunker::insert_chunks(conn, &payload.relative_path, &chunks)?;
+    }
+
+    if verbose {
+        println!("Indexed: {} [{}]", payload.relative_path, payload.language);
+    }
+    Ok(())
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "synapse")]
@@ -279,358 +382,157 @@ async fn main() {
                 std::process::exit(1);
             }
 
-            // 4. Prepare Statements
-            let mut prepared_file_upsert = match conn.prepare(
-                "MERGE (f:File {path: $path}) \
-                 ON CREATE SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports \
-                 ON MATCH SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports",
-            ) {
-                Ok(stmt) => stmt,
-                Err(err) => {
-                    eprintln!("Error: Failed to prepare File upsert query: {}", err);
-                    std::process::exit(1);
-                }
-            };
+            // 4. Load hashes cache
+            let hash_cache = load_all_hashes(&conn).unwrap_or_default();
 
-            let mut prepared_check_hash =
-                match conn.prepare("MATCH (f:File {path: $path}) RETURN f.hash") {
-                    Ok(stmt) => stmt,
-                    Err(err) => {
-                        eprintln!("Error: Failed to prepare hash check query: {}", err);
-                        std::process::exit(1);
-                    }
+            // Synchronous bounded channel
+            let (tx, rx) = std::sync::mpsc::sync_channel::<ParsedPayload>(100);
+
+            // DB writer runner thread
+            let verbose_writer = verbose;
+            let db_path_clone = db_path.clone();
+            let db_writer = std::thread::spawn(move || {
+                let db = Database::new(&db_path_clone, SystemConfig::default()).unwrap();
+                let conn = Connection::new(&db).unwrap();
+                
+                let mut prepared_file_upsert = conn.prepare(
+                    "MERGE (f:File {path: $path}) \
+                     ON CREATE SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports \
+                     ON MATCH SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports"
+                ).unwrap();
+                let mut prepared_delete_symbols = conn.prepare(
+                    "MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol) DETACH DELETE s"
+                ).unwrap();
+                let mut prepared_symbol_create = conn.prepare(
+                    "MERGE (s:Symbol {id: $id}) \
+                     ON CREATE SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls \
+                     ON MATCH SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls"
+                ).unwrap();
+                let mut prepared_containment_file = conn.prepare(
+                    "MATCH (f:File {path: $from_id}), (s:Symbol {id: $to_id}) MERGE (f)-[:CONTAINS]->(s)"
+                ).unwrap();
+                let mut prepared_containment_symbol = conn.prepare(
+                    "MATCH (p:Symbol {id: $from_id}), (c:Symbol {id: $to_id}) MERGE (p)-[:CONTAINS]->(c)"
+                ).unwrap();
+
+                let mut stmts = PreparedStatements {
+                    file_upsert: &mut prepared_file_upsert,
+                    delete_symbols: &mut prepared_delete_symbols,
+                    symbol_create: &mut prepared_symbol_create,
+                    containment_file: &mut prepared_containment_file,
+                    containment_symbol: &mut prepared_containment_symbol,
                 };
 
-            let mut prepared_delete_symbols = match conn.prepare(
-                "MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol) \
-                 DETACH DELETE s",
-            ) {
-                Ok(stmt) => stmt,
-                Err(err) => {
-                    eprintln!("Error: Failed to prepare symbol cleanup query: {}", err);
-                    std::process::exit(1);
-                }
-            };
+                let mut local_file_count = 0;
+                let mut local_byte_count = 0u64;
 
-            let mut prepared_symbol_create = match conn.prepare(
-                "MERGE (s:Symbol {id: $id}) \
-                 ON CREATE SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls \
-                 ON MATCH SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls"
-            ) {
-                Ok(stmt) => stmt,
-                Err(err) => {
-                    eprintln!("Error: Failed to prepare symbol create query: {}", err);
-                    std::process::exit(1);
+                while let Ok(payload) = rx.recv() {
+                    let size = payload.size;
+                    let path = payload.relative_path.clone();
+                    match write_payload_to_db(&conn, payload, &mut stmts, verbose_writer) {
+                        Ok(_) => {
+                            local_file_count += 1;
+                            local_byte_count += size;
+                        }
+                        Err(err) => {
+                            eprintln!("Error: Failed to index file '{}' in database: {}", path, err);
+                        }
+                    }
                 }
-            };
+                (local_file_count, local_byte_count)
+            });
 
-            let mut prepared_containment_file = match conn.prepare(
-                "MATCH (f:File {path: $from_id}), (s:Symbol {id: $to_id}) MERGE (f)-[:CONTAINS]->(s)"
-            ) {
-                Ok(stmt) => stmt,
-                Err(err) => {
-                    eprintln!("Error: Failed to prepare File containment query: {}", err);
-                    std::process::exit(1);
-                }
-            };
-
-            let mut prepared_containment_symbol = match conn.prepare(
-                "MATCH (p:Symbol {id: $from_id}), (c:Symbol {id: $to_id}) MERGE (p)-[:CONTAINS]->(c)"
-            ) {
-                Ok(stmt) => stmt,
-                Err(err) => {
-                    eprintln!("Error: Failed to prepare Symbol containment query: {}", err);
-                    std::process::exit(1);
-                }
-            };
+            // Parallel Traversal
+            let walker = WalkBuilder::new(&path).build_parallel();
+            let abs_db_path = db_path.canonicalize().unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(&db_path));
+            let path_clone = path.clone();
+            
+            // Sync-atomic counters for skips
+            let skip_count_atomic = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let skip_count_atomic_clone = skip_count_atomic.clone();
 
             println!("--------------------------------------------------");
             println!("🔍 Traversing workspace & populating graph...");
             println!("--------------------------------------------------");
 
-            let mut file_count = 0;
-            let mut skip_count = 0;
-            let mut byte_count = 0u64;
+            walker.run(|| {
+                let tx = tx.clone();
+                let hash_cache = &hash_cache;
+                let abs_db_path = &abs_db_path;
+                let path_clone = &path_clone;
+                let skip_count = &skip_count_atomic_clone;
 
-            // Resolve the absolute database path once before the walk loop.
-            // Handles first-run where the DB file does not yet exist (canonicalize falls back to cwd join).
-            let abs_db_path = db_path
-                .canonicalize()
-                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(&db_path));
+                Box::new(move |entry| {
+                    let entry = match entry {
+                        Ok(e) => e,
+                        Err(_) => return ignore::WalkState::Continue,
+                    };
+                    let file_path = entry.path();
+                    if file_path.is_file() {
+                        let abs_file = file_path.canonicalize().unwrap_or_else(|_| file_path.to_path_buf());
+                        let abs_db_str = abs_db_path.to_string_lossy();
+                        if abs_file == *abs_db_path || abs_file.to_string_lossy().starts_with(format!("{}.", abs_db_str).as_str()) {
+                            return ignore::WalkState::Continue;
+                        }
 
-            let walker = WalkBuilder::new(&path).build();
+                        let relative_path = file_path.strip_prefix(path_clone).unwrap_or(file_path).to_path_buf();
+                        let relative_path_str = relative_path.to_string_lossy().to_string();
 
-            for result in walker {
-                match result {
-                    Ok(entry) => {
-                        let file_path = entry.path();
-                        if file_path.is_file() {
-                            // Skip the database storage file and its companion WAL/temp files.
-                            // Use canonical full-path comparison to avoid false matches on same-named files in subdirectories.
-                            let abs_file = file_path
-                                .canonicalize()
-                                .unwrap_or_else(|_| file_path.to_path_buf());
-                            let abs_db_str = abs_db_path.to_string_lossy();
-                            if abs_file == abs_db_path
-                                || abs_file
-                                    .to_string_lossy()
-                                    .starts_with(format!("{}.", abs_db_str).as_str())
-                            {
-                                continue;
-                            }
-
-                            let relative_path = file_path
-                                .strip_prefix(&path)
-                                .unwrap_or(file_path)
-                                .to_path_buf();
-
-                            let relative_path_str = relative_path.to_string_lossy().to_string();
-
-                            if let Ok(metadata) = entry.metadata() {
-                                let size = metadata.len();
-                                let lang = detect_language(file_path);
-
-                                match compute_sha256(file_path) {
-                                    Ok(hash) => {
-                                        // A. Check if file hash exists and matches
-                                        let check_params: Vec<(&str, Value)> = vec![(
-                                            "path",
-                                            Value::String(relative_path_str.clone()),
-                                        )];
-
-                                        let mut matches = false;
-                                        if let Ok(mut query_result) =
-                                            conn.execute(&mut prepared_check_hash, check_params)
-                                        {
-                                            if let Some(row) = query_result.next() {
-                                                if let Some(Value::String(stored_hash)) =
-                                                    row.first()
-                                                {
-                                                    if stored_hash == &hash {
-                                                        matches = true;
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        if matches {
-                                            skip_count += 1;
-                                            if verbose {
-                                                println!(
-                                                    "Skipped (unchanged): {}",
-                                                    relative_path_str
-                                                );
-                                            }
-                                            continue;
-                                        }
-
-                                        // B. Parse file AST content first to extract imports and calls
-                                        let mut parse_success = false;
-                                        let ext = file_path
-                                            .extension()
-                                            .and_then(|e| e.to_str())
-                                            .unwrap_or("")
-                                            .to_lowercase();
-                                        let is_supported = matches!(
-                                            ext.as_str(),
-                                            "rs" | "js" | "jsx" | "ts" | "tsx"
-                                        );
-
-                                        let mut raw_imports_str = "[]".to_string();
-                                        let mut analysis_opt = None;
-                                        let mut content_opt = None;
-
-                                        if is_supported {
-                                            if let Ok(mut file_handle) =
-                                                std::fs::File::open(file_path)
-                                            {
-                                                let mut content = String::new();
-                                                if file_handle.read_to_string(&mut content).is_ok()
-                                                {
-                                                    let analysis = parser::ASTParser::parse_file(
-                                                        &relative_path,
-                                                        &content,
-                                                    );
-                                                    if let Ok(serialized) =
-                                                        serde_json::to_string(&analysis.imports)
-                                                    {
-                                                        raw_imports_str = serialized;
-                                                    }
-                                                    analysis_opt = Some(analysis);
-                                                    content_opt = Some(content);
-                                                }
-                                            }
-                                        }
-
-                                        // C. Upsert File metadata in DB
-                                        let params: Vec<(&str, Value)> = vec![
-                                            ("path", Value::String(relative_path_str.clone())),
-                                            ("language", Value::String(lang.clone())),
-                                            ("file_size", Value::Int64(size as i64)),
-                                            ("hash", Value::String(hash.clone())),
-                                            ("raw_imports", Value::String(raw_imports_str)),
-                                        ];
-
-                                        match conn.execute(&mut prepared_file_upsert, params) {
-                                            Ok(_) => {
-                                                file_count += 1;
-                                                byte_count += size;
-
-                                                // D. Clean up old symbols and contains edges for this file
-                                                let cleanup_params: Vec<(&str, Value)> = vec![(
-                                                    "path",
-                                                    Value::String(relative_path_str.clone()),
-                                                )];
-                                                if let Err(err) = conn.execute(
-                                                    &mut prepared_delete_symbols,
-                                                    cleanup_params,
-                                                ) {
-                                                    eprintln!(
-                                                        "Warning: Cleanup failed for '{}': {}",
-                                                        relative_path_str, err
-                                                    );
-                                                    // Do not proceed with re-insertion into a partially-cleaned state,
-                                                    // as CREATE edges would produce duplicates.
-                                                    continue;
-                                                }
-
-                                                // E. Upsert Symbol nodes & CONTAINS relationships
-                                                if let (Some(analysis), Some(content)) = (analysis_opt, content_opt) {
-                                                    parse_success = true;
-                                                    for node in analysis.nodes.clone() {
-                                                        let node_id = node.id.clone();
-                                                        let mut raw_calls_str = "[]".to_string();
-
-                                                        // Find matching calls for this symbol context
-                                                        let symbol_calls: Vec<parser::RawCall> =
-                                                            analysis
-                                                                .calls
-                                                                .iter()
-                                                                .filter(|c| {
-                                                                    c.line >= node.start_line
-                                                                        && c.line <= node.end_line
-                                                                })
-                                                                .cloned()
-                                                                .collect();
-                                                        if let Ok(serialized) =
-                                                            serde_json::to_string(&symbol_calls)
-                                                        {
-                                                            raw_calls_str = serialized;
-                                                        }
-
-                                                        let node_params: Vec<(&str, Value)> = vec![
-                                                            ("id", Value::String(node.id)),
-                                                            ("name", Value::String(node.name)),
-                                                            ("kind", Value::String(node.kind)),
-                                                            (
-                                                                "start_line",
-                                                                Value::Int64(
-                                                                    node.start_line as i64,
-                                                                ),
-                                                            ),
-                                                            (
-                                                                "start_col",
-                                                                Value::Int64(node.start_col as i64),
-                                                            ),
-                                                            (
-                                                                "end_line",
-                                                                Value::Int64(node.end_line as i64),
-                                                            ),
-                                                            (
-                                                                "signature",
-                                                                Value::String(node.signature),
-                                                            ),
-                                                            (
-                                                                "raw_calls",
-                                                                Value::String(raw_calls_str),
-                                                            ),
-                                                        ];
-                                                        if let Err(err) = conn.execute(
-                                                            &mut prepared_symbol_create,
-                                                            node_params,
-                                                        ) {
-                                                            parse_success = false;
-                                                            if verbose {
-                                                                eprintln!("Warning: Failed to insert symbol '{}': {}", node_id, err);
-                                                            }
-                                                        }
-                                                    }
-
-                                                    for edge in analysis.edges {
-                                                        let edge_params: Vec<(&str, Value)> = vec![
-                                                            (
-                                                                "from_id",
-                                                                Value::String(edge.from_id.clone()),
-                                                            ),
-                                                            (
-                                                                "to_id",
-                                                                Value::String(edge.to_id.clone()),
-                                                            ),
-                                                        ];
-                                                        let result =
-                                                            if edge.from_id == relative_path_str {
-                                                                conn.execute(
-                                                                    &mut prepared_containment_file,
-                                                                    edge_params,
-                                                                )
-                                                            } else {
-                                                                conn.execute(
-                                                                &mut prepared_containment_symbol,
-                                                                edge_params,
-                                                            )
-                                                            };
-                                                        if let Err(err) = result {
-                                                            parse_success = false;
-                                                            if verbose {
-                                                                eprintln!("Warning: Failed to insert edge '{}'->'{}': {}", edge.from_id, edge.to_id, err);
-                                                            }
-                                                        }
-                                                    }
-
-                                                    // F. Extract & Insert Chunks
-                                                    let chunks = chunker::chunk_source(&relative_path_str, &content, &analysis.nodes);
-                                                    if let Err(err) = chunker::insert_chunks(&conn, &relative_path_str, &chunks) {
-                                                        parse_success = false;
-                                                        if verbose {
-                                                            eprintln!("Warning: Failed to insert chunks for '{}': {}", relative_path_str, err);
-                                                        }
-                                                    }
-                                                }
-
-                                                if verbose {
-                                                    println!(
-                                                        "Indexed: {} [{}] | Size: {} B | SHA-256: {} (parsed: {})",
-                                                        relative_path_str,
-                                                        lang,
-                                                        size,
-                                                        &hash[..8],
-                                                        parse_success
-                                                    );
-                                                }
-                                            }
-                                            Err(err) => {
-                                                eprintln!("Error: Failed to index file '{}' in database: {}", relative_path_str, err);
-                                            }
-                                        }
+                        if let Ok(metadata) = entry.metadata() {
+                            let size = metadata.len();
+                            let lang = detect_language(file_path);
+                            if let Ok(hash) = compute_sha256(file_path) {
+                                if let Some(stored_hash) = hash_cache.get(&relative_path_str) {
+                                    if *stored_hash == hash {
+                                        skip_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                        return ignore::WalkState::Continue;
                                     }
-                                    Err(err) => {
-                                        if verbose {
-                                            eprintln!(
-                                                "Warning: Failed to read '{}': {}",
-                                                file_path.display(),
-                                                err
-                                            );
+                                }
+
+                                // Load and parse in worker thread
+                                let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                                let is_supported = matches!(ext.as_str(), "rs" | "js" | "jsx" | "ts" | "tsx");
+
+                                let mut analysis_opt = None;
+                                let mut content_opt = None;
+
+                                if is_supported {
+                                    if let Ok(mut file_handle) = std::fs::File::open(file_path) {
+                                        let mut content = String::new();
+                                        if file_handle.read_to_string(&mut content).is_ok() {
+                                            let analysis = parser::ASTParser::parse_file(&relative_path, &content);
+                                            analysis_opt = Some(analysis);
+                                            content_opt = Some(content);
                                         }
                                     }
                                 }
+
+                                let payload = ParsedPayload {
+                                    relative_path: relative_path_str,
+                                    language: lang,
+                                    size,
+                                    hash,
+                                    analysis: analysis_opt,
+                                    content: content_opt,
+                                };
+
+                                let _ = tx.send(payload);
                             }
                         }
                     }
-                    Err(err) => {
-                        eprintln!("Workspace Traversal Error: {}", err);
-                    }
-                }
-            }
+                    ignore::WalkState::Continue
+                })
+            });
+
+            drop(tx); // Close channel
+
+            // Wait for writes to finish
+            let (file_count_res, byte_count_res) = db_writer.join().unwrap();
+            let file_count = file_count_res;
+            let byte_count = byte_count_res;
+            let skip_count = skip_count_atomic.load(std::sync::atomic::Ordering::SeqCst);
+
+
 
             println!("--------------------------------------------------");
             println!("✅ Workspace traversal complete!");
@@ -779,4 +681,88 @@ mod tests {
             _ => panic!("Expected Repl variant"),
         }
     }
+
+    #[test]
+    fn test_load_all_hashes_empty() {
+        let db_path = Path::new("test_load_empty_hashes_unique.lbug");
+        if db_path.exists() {
+            let _ = std::fs::remove_dir_all(db_path);
+        }
+        let db = Database::new(db_path, SystemConfig::default()).unwrap();
+        let conn = Connection::new(&db).unwrap();
+        init_schema(&conn).unwrap();
+        let res = load_all_hashes(&conn).unwrap();
+        assert!(res.is_empty());
+        drop(conn);
+        drop(db);
+        if db_path.exists() {
+            let _ = std::fs::remove_dir_all(db_path);
+        }
+    }
+
+    #[test]
+    fn test_write_payload_to_db_compiles() {
+        let db_path = Path::new("test_write_payload_unique.lbug");
+        if db_path.exists() {
+            let _ = std::fs::remove_dir_all(db_path);
+        }
+        let db = Database::new(db_path, SystemConfig::default()).unwrap();
+        let conn = Connection::new(&db).unwrap();
+        init_schema(&conn).unwrap();
+
+        let mut prepared_file_upsert = conn.prepare(
+            "MERGE (f:File {path: $path}) \
+             ON CREATE SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports \
+             ON MATCH SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports"
+        ).unwrap();
+        let mut prepared_delete_symbols = conn.prepare(
+            "MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol) DETACH DELETE s"
+        ).unwrap();
+        let mut prepared_symbol_create = conn.prepare(
+            "MERGE (s:Symbol {id: $id}) \
+             ON CREATE SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls \
+             ON MATCH SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls"
+        ).unwrap();
+        let mut prepared_containment_file = conn.prepare(
+            "MATCH (f:File {path: $from_id}), (s:Symbol {id: $to_id}) MERGE (f)-[:CONTAINS]->(s)"
+        ).unwrap();
+        let mut prepared_containment_symbol = conn.prepare(
+            "MATCH (p:Symbol {id: $from_id}), (c:Symbol {id: $to_id}) MERGE (p)-[:CONTAINS]->(c)"
+        ).unwrap();
+
+        let mut stmts = PreparedStatements {
+            file_upsert: &mut prepared_file_upsert,
+            delete_symbols: &mut prepared_delete_symbols,
+            symbol_create: &mut prepared_symbol_create,
+            containment_file: &mut prepared_containment_file,
+            containment_symbol: &mut prepared_containment_symbol,
+        };
+
+        let payload = ParsedPayload {
+            relative_path: "src/dummy.rs".to_string(),
+            language: "Rust".to_string(),
+            size: 100,
+            hash: "dummyhash".to_string(),
+            analysis: None,
+            content: None,
+        };
+
+        let res = write_payload_to_db(&conn, payload, &mut stmts, false);
+        assert!(res.is_ok());
+
+        // Verify file is in DB
+        {
+            let mut stmt = conn.prepare("MATCH (f:File {path: 'src/dummy.rs'}) RETURN f.hash").unwrap();
+            let mut result = conn.execute(&mut stmt, vec![]).unwrap();
+            let row = result.next().unwrap();
+            assert_eq!(row.first().unwrap(), &Value::String("dummyhash".to_string()));
+        }
+
+        drop(conn);
+        drop(db);
+        if db_path.exists() {
+            let _ = std::fs::remove_dir_all(db_path);
+        }
+    }
 }
+

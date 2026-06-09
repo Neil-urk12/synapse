@@ -66,6 +66,58 @@ enum Commands {
         #[arg(short, long, default_value = "synapse.lbug")]
         db: PathBuf,
     },
+    /// Find all callers of a target symbol
+    Callers {
+        /// Target symbol name
+        symbol: String,
+
+        /// Match exactly instead of fuzzy substring match
+        #[arg(short, long)]
+        exact: bool,
+
+        /// Output format: table, markdown, json
+        #[arg(long, default_value = "table")]
+        format: String,
+
+        /// Path to the LadybugDB database storage file
+        #[arg(short, long, default_value = "synapse.lbug")]
+        db: PathBuf,
+    },
+    /// Find all callees of a target symbol
+    Callees {
+        /// Target symbol name
+        symbol: String,
+
+        /// Match exactly instead of fuzzy substring match
+        #[arg(short, long)]
+        exact: bool,
+
+        /// Output format: table, markdown, json
+        #[arg(long, default_value = "table")]
+        format: String,
+
+        /// Path to the LadybugDB database storage file
+        #[arg(short, long, default_value = "synapse.lbug")]
+        db: PathBuf,
+    },
+    /// List all dependencies (imports and imported-by) for a file
+    #[command(alias = "deps")]
+    Dependencies {
+        /// Target file path
+        file: String,
+
+        /// Match exactly instead of fuzzy substring match
+        #[arg(short, long)]
+        exact: bool,
+
+        /// Output format: table, markdown, json
+        #[arg(long, default_value = "table")]
+        format: String,
+
+        /// Path to the LadybugDB database storage file
+        #[arg(short, long, default_value = "synapse.lbug")]
+        db: PathBuf,
+    },
 }
 
 /// Computes the SHA-256 hash of a target file for incremental indexing detection.
@@ -588,6 +640,101 @@ async fn main() {
                 eprintln!("Error: {}", err);
                 std::process::exit(1);
             }
+        }
+        Commands::Callers { symbol, exact, format, db } => {
+            if let Err(err) = query_cli::handle_callers(&symbol, exact, &format, &db) {
+                eprintln!("Error: {}", err);
+                std::process::exit(1);
+            }
+        }
+        Commands::Callees { symbol, exact, format, db } => {
+            if let Err(err) = query_cli::handle_callees(&symbol, exact, &format, &db) {
+                eprintln!("Error: {}", err);
+                std::process::exit(1);
+            }
+        }
+        Commands::Dependencies { file, exact, format, db } => {
+            if let Err(err) = query_cli::handle_dependencies(&file, exact, &format, &db) {
+                eprintln!("Error: {}", err);
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cli_parsing_callers() {
+        let args = vec![
+            "synapse",
+            "callers",
+            "test_symbol",
+            "--exact",
+            "--format",
+            "json",
+            "-d",
+            "test_db.lbug",
+        ];
+        let parsed = Cli::try_parse_from(args).unwrap();
+        match parsed.command {
+            Commands::Callers { symbol, exact, format, db } => {
+                assert_eq!(symbol, "test_symbol");
+                assert!(exact);
+                assert_eq!(format, "json");
+                assert_eq!(db, PathBuf::from("test_db.lbug"));
+            }
+            _ => panic!("Expected Callers variant"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parsing_callees() {
+        let args = vec![
+            "synapse",
+            "callees",
+            "test_symbol",
+            "--exact",
+            "--format",
+            "markdown",
+            "-d",
+            "test_db.lbug",
+        ];
+        let parsed = Cli::try_parse_from(args).unwrap();
+        match parsed.command {
+            Commands::Callees { symbol, exact, format, db } => {
+                assert_eq!(symbol, "test_symbol");
+                assert!(exact);
+                assert_eq!(format, "markdown");
+                assert_eq!(db, PathBuf::from("test_db.lbug"));
+            }
+            _ => panic!("Expected Callees variant"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parsing_dependencies() {
+        let args = vec![
+            "synapse",
+            "dependencies",
+            "test_file.rs",
+            "--exact",
+            "--format",
+            "table",
+            "-d",
+            "test_db.lbug",
+        ];
+        let parsed = Cli::try_parse_from(args).unwrap();
+        match parsed.command {
+            Commands::Dependencies { file, exact, format, db } => {
+                assert_eq!(file, "test_file.rs");
+                assert!(exact);
+                assert_eq!(format, "table");
+                assert_eq!(db, PathBuf::from("test_db.lbug"));
+            }
+            _ => panic!("Expected Dependencies variant"),
         }
     }
 }

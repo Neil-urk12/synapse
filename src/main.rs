@@ -1,6 +1,8 @@
+pub mod chunker;
 pub mod linker;
 pub mod parser;
 pub mod query_cli;
+
 
 use std::fs::File;
 use std::io::{self, Read};
@@ -436,6 +438,7 @@ async fn main() {
 
                                         let mut raw_imports_str = "[]".to_string();
                                         let mut analysis_opt = None;
+                                        let mut content_opt = None;
 
                                         if is_supported {
                                             if let Ok(mut file_handle) =
@@ -454,6 +457,7 @@ async fn main() {
                                                         raw_imports_str = serialized;
                                                     }
                                                     analysis_opt = Some(analysis);
+                                                    content_opt = Some(content);
                                                 }
                                             }
                                         }
@@ -491,9 +495,9 @@ async fn main() {
                                                 }
 
                                                 // E. Upsert Symbol nodes & CONTAINS relationships
-                                                if let Some(analysis) = analysis_opt {
+                                                if let (Some(analysis), Some(content)) = (analysis_opt, content_opt) {
                                                     parse_success = true;
-                                                    for node in analysis.nodes {
+                                                    for node in analysis.nodes.clone() {
                                                         let node_id = node.id.clone();
                                                         let mut raw_calls_str = "[]".to_string();
 
@@ -580,6 +584,15 @@ async fn main() {
                                                             if verbose {
                                                                 eprintln!("Warning: Failed to insert edge '{}'->'{}': {}", edge.from_id, edge.to_id, err);
                                                             }
+                                                        }
+                                                    }
+
+                                                    // F. Extract & Insert Chunks
+                                                    let chunks = chunker::chunk_source(&relative_path_str, &content, &analysis.nodes);
+                                                    if let Err(err) = chunker::insert_chunks(&conn, &relative_path_str, &chunks) {
+                                                        parse_success = false;
+                                                        if verbose {
+                                                            eprintln!("Warning: Failed to insert chunks for '{}': {}", relative_path_str, err);
                                                         }
                                                     }
                                                 }

@@ -118,6 +118,12 @@ enum Commands {
         #[arg(short, long, default_value = "synapse.lbug")]
         db: PathBuf,
     },
+    /// Start an interactive query shell (REPL)
+    Repl {
+        /// Path to the LadybugDB database storage file
+        #[arg(short, long, default_value = "synapse.lbug")]
+        db: PathBuf,
+    },
 }
 
 /// Computes the SHA-256 hash of a target file for incremental indexing detection.
@@ -659,6 +665,12 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::Repl { db } => {
+            if let Err(err) = query_cli::run_repl(&db) {
+                eprintln!("Error: {}", err);
+                std::process::exit(1);
+            }
+        }
     }
 }
 
@@ -735,6 +747,23 @@ mod tests {
                 assert_eq!(db, PathBuf::from("test_db.lbug"));
             }
             _ => panic!("Expected Dependencies variant"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parsing_repl() {
+        let args = vec![
+            "synapse",
+            "repl",
+            "-d",
+            "test_db.lbug",
+        ];
+        let parsed = Cli::try_parse_from(args).unwrap();
+        match parsed.command {
+            Commands::Repl { db } => {
+                assert_eq!(db, PathBuf::from("test_db.lbug"));
+            }
+            _ => panic!("Expected Repl variant"),
         }
     }
 }

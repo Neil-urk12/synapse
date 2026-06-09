@@ -55,11 +55,11 @@ enum Commands {
         file: Option<String>,
 
         /// Enable fuzzy/case-insensitive substring search in Rust
-        #[arg(short, long)]
+        #[arg(short = 'z', long)]
         fuzzy: bool,
 
         /// Output format: markdown or json
-        #[arg(short, long, default_value = "markdown")]
+        #[arg(long, default_value = "markdown")]
         format: String,
 
         /// Path to the LadybugDB database storage file

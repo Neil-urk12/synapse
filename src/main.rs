@@ -1,3 +1,4 @@
+pub mod linker;
 pub mod parser;
 
 use std::fs::File;
@@ -75,8 +76,8 @@ fn detect_language(path: &Path) -> String {
 fn init_schema(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     let ddls = vec![
         // Node Tables
-        "CREATE NODE TABLE File (path STRING, language STRING, file_size INT64, hash STRING, PRIMARY KEY (path))",
-        "CREATE NODE TABLE Symbol (id STRING, name STRING, kind STRING, start_line INT64, start_col INT64, end_line INT64, signature STRING, PRIMARY KEY (id))",
+        "CREATE NODE TABLE File (path STRING, language STRING, file_size INT64, hash STRING, raw_imports STRING, PRIMARY KEY (path))",
+        "CREATE NODE TABLE Symbol (id STRING, name STRING, kind STRING, start_line INT64, start_col INT64, end_line INT64, signature STRING, raw_calls STRING, PRIMARY KEY (id))",
         "CREATE NODE TABLE Chunk (id STRING, text STRING, embedding FLOAT[384], PRIMARY KEY (id))",
         // Relationship Tables
         "CREATE REL TABLE CONTAINS (FROM File TO Symbol, FROM Symbol TO Symbol)",
@@ -162,11 +163,35 @@ async fn main() {
                 std::process::exit(1);
             }
 
+            // Check if existing tables are compatible (have raw_imports and raw_calls columns)
+            if conn
+                .query("MATCH (f:File) RETURN f.raw_imports LIMIT 1")
+                .is_err()
+            {
+                eprintln!("\n❌ Database Compatibility Error!");
+                eprintln!("The database at '{}' is incompatible (missing 'raw_imports' column on 'File').", db_path.display());
+                eprintln!(
+                    "Please delete the database file and run the indexer again to recreate it."
+                );
+                std::process::exit(1);
+            }
+            if conn
+                .query("MATCH (s:Symbol) RETURN s.raw_calls LIMIT 1")
+                .is_err()
+            {
+                eprintln!("\n❌ Database Compatibility Error!");
+                eprintln!("The database at '{}' is incompatible (missing 'raw_calls' column on 'Symbol').", db_path.display());
+                eprintln!(
+                    "Please delete the database file and run the indexer again to recreate it."
+                );
+                std::process::exit(1);
+            }
+
             // 4. Prepare Statements
             let mut prepared_file_upsert = match conn.prepare(
                 "MERGE (f:File {path: $path}) \
-                 ON CREATE SET f.language = $language, f.file_size = $file_size, f.hash = $hash \
-                 ON MATCH SET f.language = $language, f.file_size = $file_size, f.hash = $hash",
+                 ON CREATE SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports \
+                 ON MATCH SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports",
             ) {
                 Ok(stmt) => stmt,
                 Err(err) => {
@@ -175,19 +200,18 @@ async fn main() {
                 }
             };
 
-            let mut prepared_check_hash = match conn.prepare(
-                "MATCH (f:File {path: $path}) RETURN f.hash"
-            ) {
-                Ok(stmt) => stmt,
-                Err(err) => {
-                    eprintln!("Error: Failed to prepare hash check query: {}", err);
-                    std::process::exit(1);
-                }
-            };
+            let mut prepared_check_hash =
+                match conn.prepare("MATCH (f:File {path: $path}) RETURN f.hash") {
+                    Ok(stmt) => stmt,
+                    Err(err) => {
+                        eprintln!("Error: Failed to prepare hash check query: {}", err);
+                        std::process::exit(1);
+                    }
+                };
 
             let mut prepared_delete_symbols = match conn.prepare(
                 "MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol) \
-                 DETACH DELETE s"
+                 DETACH DELETE s",
             ) {
                 Ok(stmt) => stmt,
                 Err(err) => {
@@ -198,8 +222,8 @@ async fn main() {
 
             let mut prepared_symbol_create = match conn.prepare(
                 "MERGE (s:Symbol {id: $id}) \
-                 ON CREATE SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature \
-                 ON MATCH SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature"
+                 ON CREATE SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls \
+                 ON MATCH SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls"
             ) {
                 Ok(stmt) => stmt,
                 Err(err) => {
@@ -238,7 +262,8 @@ async fn main() {
 
             // Resolve the absolute database path once before the walk loop.
             // Handles first-run where the DB file does not yet exist (canonicalize falls back to cwd join).
-            let abs_db_path = db_path.canonicalize()
+            let abs_db_path = db_path
+                .canonicalize()
                 .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(&db_path));
 
             let walker = WalkBuilder::new(&path).build();
@@ -250,9 +275,15 @@ async fn main() {
                         if file_path.is_file() {
                             // Skip the database storage file and its companion WAL/temp files.
                             // Use canonical full-path comparison to avoid false matches on same-named files in subdirectories.
-                            let abs_file = file_path.canonicalize().unwrap_or_else(|_| file_path.to_path_buf());
+                            let abs_file = file_path
+                                .canonicalize()
+                                .unwrap_or_else(|_| file_path.to_path_buf());
                             let abs_db_str = abs_db_path.to_string_lossy();
-                            if abs_file == abs_db_path || abs_file.to_string_lossy().starts_with(format!("{}.", abs_db_str).as_str()) {
+                            if abs_file == abs_db_path
+                                || abs_file
+                                    .to_string_lossy()
+                                    .starts_with(format!("{}.", abs_db_str).as_str())
+                            {
                                 continue;
                             }
 
@@ -270,14 +301,19 @@ async fn main() {
                                 match compute_sha256(file_path) {
                                     Ok(hash) => {
                                         // A. Check if file hash exists and matches
-                                        let check_params: Vec<(&str, Value)> = vec![
-                                            ("path", Value::String(relative_path_str.clone())),
-                                        ];
+                                        let check_params: Vec<(&str, Value)> = vec![(
+                                            "path",
+                                            Value::String(relative_path_str.clone()),
+                                        )];
 
                                         let mut matches = false;
-                                        if let Ok(mut query_result) = conn.execute(&mut prepared_check_hash, check_params) {
+                                        if let Ok(mut query_result) =
+                                            conn.execute(&mut prepared_check_hash, check_params)
+                                        {
                                             if let Some(row) = query_result.next() {
-                                                if let Some(Value::String(stored_hash)) = row.first() {
+                                                if let Some(Value::String(stored_hash)) =
+                                                    row.first()
+                                                {
                                                     if stored_hash == &hash {
                                                         matches = true;
                                                     }
@@ -288,17 +324,57 @@ async fn main() {
                                         if matches {
                                             skip_count += 1;
                                             if verbose {
-                                                println!("Skipped (unchanged): {}", relative_path_str);
+                                                println!(
+                                                    "Skipped (unchanged): {}",
+                                                    relative_path_str
+                                                );
                                             }
                                             continue;
                                         }
 
-                                        // B. Upsert File metadata in DB
+                                        // B. Parse file AST content first to extract imports and calls
+                                        let mut parse_success = false;
+                                        let ext = file_path
+                                            .extension()
+                                            .and_then(|e| e.to_str())
+                                            .unwrap_or("")
+                                            .to_lowercase();
+                                        let is_supported = matches!(
+                                            ext.as_str(),
+                                            "rs" | "js" | "jsx" | "ts" | "tsx"
+                                        );
+
+                                        let mut raw_imports_str = "[]".to_string();
+                                        let mut analysis_opt = None;
+
+                                        if is_supported {
+                                            if let Ok(mut file_handle) =
+                                                std::fs::File::open(file_path)
+                                            {
+                                                let mut content = String::new();
+                                                if file_handle.read_to_string(&mut content).is_ok()
+                                                {
+                                                    let analysis = parser::ASTParser::parse_file(
+                                                        &relative_path,
+                                                        &content,
+                                                    );
+                                                    if let Ok(serialized) =
+                                                        serde_json::to_string(&analysis.imports)
+                                                    {
+                                                        raw_imports_str = serialized;
+                                                    }
+                                                    analysis_opt = Some(analysis);
+                                                }
+                                            }
+                                        }
+
+                                        // C. Upsert File metadata in DB
                                         let params: Vec<(&str, Value)> = vec![
                                             ("path", Value::String(relative_path_str.clone())),
                                             ("language", Value::String(lang.clone())),
                                             ("file_size", Value::Int64(size as i64)),
                                             ("hash", Value::String(hash.clone())),
+                                            ("raw_imports", Value::String(raw_imports_str)),
                                         ];
 
                                         match conn.execute(&mut prepared_file_upsert, params) {
@@ -306,66 +382,113 @@ async fn main() {
                                                 file_count += 1;
                                                 byte_count += size;
 
-                                                // C. Clean up old symbols and contains edges for this file
-                                                let cleanup_params: Vec<(&str, Value)> = vec![
-                                                    ("path", Value::String(relative_path_str.clone())),
-                                                ];
-                                                if let Err(err) = conn.execute(&mut prepared_delete_symbols, cleanup_params) {
-                                                    eprintln!("Warning: Cleanup failed for '{}': {}", relative_path_str, err);
+                                                // D. Clean up old symbols and contains edges for this file
+                                                let cleanup_params: Vec<(&str, Value)> = vec![(
+                                                    "path",
+                                                    Value::String(relative_path_str.clone()),
+                                                )];
+                                                if let Err(err) = conn.execute(
+                                                    &mut prepared_delete_symbols,
+                                                    cleanup_params,
+                                                ) {
+                                                    eprintln!(
+                                                        "Warning: Cleanup failed for '{}': {}",
+                                                        relative_path_str, err
+                                                    );
                                                     // Do not proceed with re-insertion into a partially-cleaned state,
                                                     // as CREATE edges would produce duplicates.
                                                     continue;
                                                 }
 
-                                                // D. Parse file AST content
-                                                let mut parse_success = false;
-                                                let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                                                let is_supported = matches!(ext.as_str(), "rs" | "js" | "jsx" | "ts" | "tsx");
+                                                // E. Upsert Symbol nodes & CONTAINS relationships
+                                                if let Some(analysis) = analysis_opt {
+                                                    parse_success = true;
+                                                    for node in analysis.nodes {
+                                                        let node_id = node.id.clone();
+                                                        let mut raw_calls_str = "[]".to_string();
 
-                                                if is_supported {
-                                                    if let Ok(mut file_handle) = std::fs::File::open(file_path) {
-                                                        let mut content = String::new();
-                                                        if file_handle.read_to_string(&mut content).is_ok() {
-                                                            let (nodes, edges) = parser::ASTParser::parse_file(&relative_path, &content);
+                                                        // Find matching calls for this symbol context
+                                                        let symbol_calls: Vec<parser::RawCall> =
+                                                            analysis
+                                                                .calls
+                                                                .iter()
+                                                                .filter(|c| {
+                                                                    c.line >= node.start_line
+                                                                        && c.line <= node.end_line
+                                                                })
+                                                                .cloned()
+                                                                .collect();
+                                                        if let Ok(serialized) =
+                                                            serde_json::to_string(&symbol_calls)
+                                                        {
+                                                            raw_calls_str = serialized;
+                                                        }
 
-                                                            // E. Upsert Symbol nodes
-                                                            parse_success = true; // assume success; error handlers below will flip this
-                                                            for node in nodes {
-                                                                let node_id = node.id.clone();
-                                                                let node_params: Vec<(&str, Value)> = vec![
-                                                                    ("id", Value::String(node.id)),
-                                                                    ("name", Value::String(node.name)),
-                                                                    ("kind", Value::String(node.kind)),
-                                                                    ("start_line", Value::Int64(node.start_line as i64)),
-                                                                    ("start_col", Value::Int64(node.start_col as i64)),
-                                                                    ("end_line", Value::Int64(node.end_line as i64)),
-                                                                    ("signature", Value::String(node.signature)),
-                                                                ];
-                                                                if let Err(err) = conn.execute(&mut prepared_symbol_create, node_params) {
-                                                                    parse_success = false;
-                                                                    if verbose {
-                                                                        eprintln!("Warning: Failed to insert symbol '{}': {}", node_id, err);
-                                                                    }
-                                                                }
+                                                        let node_params: Vec<(&str, Value)> = vec![
+                                                            ("id", Value::String(node.id)),
+                                                            ("name", Value::String(node.name)),
+                                                            ("kind", Value::String(node.kind)),
+                                                            (
+                                                                "start_line",
+                                                                Value::Int64(
+                                                                    node.start_line as i64,
+                                                                ),
+                                                            ),
+                                                            (
+                                                                "start_col",
+                                                                Value::Int64(node.start_col as i64),
+                                                            ),
+                                                            (
+                                                                "end_line",
+                                                                Value::Int64(node.end_line as i64),
+                                                            ),
+                                                            (
+                                                                "signature",
+                                                                Value::String(node.signature),
+                                                            ),
+                                                            (
+                                                                "raw_calls",
+                                                                Value::String(raw_calls_str),
+                                                            ),
+                                                        ];
+                                                        if let Err(err) = conn.execute(
+                                                            &mut prepared_symbol_create,
+                                                            node_params,
+                                                        ) {
+                                                            parse_success = false;
+                                                            if verbose {
+                                                                eprintln!("Warning: Failed to insert symbol '{}': {}", node_id, err);
                                                             }
+                                                        }
+                                                    }
 
-                                                            // F. Upsert CONTAINS relationships
-                                                            for edge in edges {
-                                                                let edge_params: Vec<(&str, Value)> = vec![
-                                                                    ("from_id", Value::String(edge.from_id.clone())),
-                                                                    ("to_id", Value::String(edge.to_id.clone())),
-                                                                ];
-                                                                let result = if edge.from_id == relative_path_str {
-                                                                    conn.execute(&mut prepared_containment_file, edge_params)
-                                                                } else {
-                                                                    conn.execute(&mut prepared_containment_symbol, edge_params)
-                                                                };
-                                                                if let Err(err) = result {
-                                                                    parse_success = false;
-                                                                    if verbose {
-                                                                        eprintln!("Warning: Failed to insert edge '{}'->'{}': {}", edge.from_id, edge.to_id, err);
-                                                                    }
-                                                                }
+                                                    for edge in analysis.edges {
+                                                        let edge_params: Vec<(&str, Value)> = vec![
+                                                            (
+                                                                "from_id",
+                                                                Value::String(edge.from_id.clone()),
+                                                            ),
+                                                            (
+                                                                "to_id",
+                                                                Value::String(edge.to_id.clone()),
+                                                            ),
+                                                        ];
+                                                        let result =
+                                                            if edge.from_id == relative_path_str {
+                                                                conn.execute(
+                                                                    &mut prepared_containment_file,
+                                                                    edge_params,
+                                                                )
+                                                            } else {
+                                                                conn.execute(
+                                                                &mut prepared_containment_symbol,
+                                                                edge_params,
+                                                            )
+                                                            };
+                                                        if let Err(err) = result {
+                                                            parse_success = false;
+                                                            if verbose {
+                                                                eprintln!("Warning: Failed to insert edge '{}'->'{}': {}", edge.from_id, edge.to_id, err);
                                                             }
                                                         }
                                                     }
@@ -389,7 +512,11 @@ async fn main() {
                                     }
                                     Err(err) => {
                                         if verbose {
-                                            eprintln!("Warning: Failed to read '{}': {}", file_path.display(), err);
+                                            eprintln!(
+                                                "Warning: Failed to read '{}': {}",
+                                                file_path.display(),
+                                                err
+                                            );
                                         }
                                     }
                                 }
@@ -411,6 +538,12 @@ async fn main() {
                 (byte_count as f64) / 1024.0 / 1024.0
             );
             println!("==================================================");
+
+            // 5. Run Global Linker
+            if let Err(err) = linker::run_linker(&conn, verbose) {
+                eprintln!("Error: Global linking phase failed: {}", err);
+                std::process::exit(1);
+            }
         }
     }
 }

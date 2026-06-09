@@ -1,5 +1,21 @@
 use std::path::Path;
-use lbug::{Connection, Database, SystemConfig};
+use lbug::{Connection, Database, SystemConfig, Value};
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SymbolInfo {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FileInfo {
+    pub path: String,
+    pub language: String,
+}
 
 pub fn run_query_internal(
     conn: &Connection,
@@ -25,6 +41,40 @@ pub fn handle_query(query: &str, db_path: &Path) -> Result<(), Box<dyn std::erro
     let conn = Connection::new(&db)?;
     run_query_internal(&conn, query, &mut std::io::stdout())?;
     Ok(())
+}
+
+pub fn resolve_symbol_candidates(
+    target: &str,
+    fuzzy: bool,
+    pool: &[SymbolInfo],
+) -> Vec<SymbolInfo> {
+    pool.iter()
+        .filter(|s| {
+            if fuzzy {
+                s.name.to_lowercase().contains(&target.to_lowercase())
+            } else {
+                s.name == target
+            }
+        })
+        .cloned()
+        .collect()
+}
+
+pub fn resolve_file_candidates(
+    target: &str,
+    fuzzy: bool,
+    pool: &[FileInfo],
+) -> Vec<FileInfo> {
+    pool.iter()
+        .filter(|f| {
+            if fuzzy {
+                f.path.to_lowercase().contains(&target.to_lowercase())
+            } else {
+                f.path == target
+            }
+        })
+        .cloned()
+        .collect()
 }
 
 pub fn handle_context(
@@ -121,5 +171,37 @@ mod tests {
         assert!(output.contains("ID"));
         assert!(output.contains("NAME"));
         let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn test_fuzzy_filtering() {
+        let symbols = vec![
+            SymbolInfo {
+                id: "src/main.rs::main".to_string(),
+                name: "main".to_string(),
+                kind: "Function".to_string(),
+                start_line: 1,
+                end_line: 5,
+                signature: "fn main()".to_string(),
+            },
+            SymbolInfo {
+                id: "src/linker.rs::run_linker".to_string(),
+                name: "run_linker".to_string(),
+                kind: "Function".to_string(),
+                start_line: 10,
+                end_line: 20,
+                signature: "fn run_linker()".to_string(),
+            },
+        ];
+
+        // Exact match
+        let matches = resolve_symbol_candidates("run_linker", false, &symbols);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].id, "src/linker.rs::run_linker");
+
+        // Fuzzy case-insensitive substring
+        let matches_fuzzy = resolve_symbol_candidates("LINK", true, &symbols);
+        assert_eq!(matches_fuzzy.len(), 1);
+        assert_eq!(matches_fuzzy[0].id, "src/linker.rs::run_linker");
     }
 }

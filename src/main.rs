@@ -54,7 +54,7 @@ enum Commands {
         #[arg(short, long)]
         file: Option<String>,
 
-        /// Enable fuzzy/case-insensitive substring search in Rust
+        /// Enable fuzzy/case-insensitive substring search
         #[arg(short = 'z', long)]
         fuzzy: bool,
 

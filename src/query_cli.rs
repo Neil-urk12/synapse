@@ -57,10 +57,18 @@ pub fn resolve_symbol_candidates(
 ) -> Vec<SymbolInfo> {
     pool.iter()
         .filter(|s| {
-            if fuzzy {
-                s.name.to_lowercase().contains(&target.to_lowercase())
+            if target.contains("::") {
+                if fuzzy {
+                    s.id.to_lowercase().contains(&target.to_lowercase())
+                } else {
+                    s.id == target
+                }
             } else {
-                s.name == target
+                if fuzzy {
+                    s.name.to_lowercase().contains(&target.to_lowercase())
+                } else {
+                    s.name == target
+                }
             }
         })
         .cloned()
@@ -244,6 +252,9 @@ pub fn run_context_internal(
     format: &str,
     writer: &mut dyn std::io::Write,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if format != "markdown" && format != "json" {
+        return Err(format!("Invalid output format '{}'. Supported formats are: markdown, json", format).into());
+    }
     if symbol_name.is_some() && file_path.is_some() {
         return Err("Options --symbol and --file are mutually exclusive".into());
     }
@@ -256,49 +267,38 @@ pub fn run_context_internal(
 
     if let Some(sym) = symbol_name {
         let mut candidates = Vec::new();
-        if fuzzy {
-            let mut stmt = conn.prepare("MATCH (s:Symbol) WHERE LOWER(s.name) CONTAINS LOWER($target) RETURN s.id, s.name, s.kind, s.start_line, s.end_line, s.signature")?;
-            let query_res = conn.execute(&mut stmt, vec![("target", Value::String(sym.to_string()))])?;
-            for row in query_res {
-                if let (
-                    Some(Value::String(id)),
-                    Some(Value::String(name)),
-                    Some(Value::String(kind)),
-                    Some(Value::Int64(sl)),
-                    Some(Value::Int64(el)),
-                    Some(Value::String(sig)),
-                ) = (row.first(), row.get(1), row.get(2), row.get(3), row.get(4), row.get(5)) {
-                    candidates.push(SymbolInfo {
-                        id: id.clone(),
-                        name: name.clone(),
-                        kind: kind.clone(),
-                        start_line: *sl as usize,
-                        end_line: *el as usize,
-                        signature: sig.clone(),
-                    });
-                }
+        let query_str = if sym.contains("::") {
+            if fuzzy {
+                "MATCH (s:Symbol) WHERE LOWER(s.id) CONTAINS LOWER($target) RETURN s.id, s.name, s.kind, s.start_line, s.end_line, s.signature"
+            } else {
+                "MATCH (s:Symbol {id: $target}) RETURN s.id, s.name, s.kind, s.start_line, s.end_line, s.signature"
             }
         } else {
-            let mut stmt = conn.prepare("MATCH (s:Symbol {name: $target}) RETURN s.id, s.name, s.kind, s.start_line, s.end_line, s.signature")?;
-            let query_res = conn.execute(&mut stmt, vec![("target", Value::String(sym.to_string()))])?;
-            for row in query_res {
-                if let (
-                    Some(Value::String(id)),
-                    Some(Value::String(name)),
-                    Some(Value::String(kind)),
-                    Some(Value::Int64(sl)),
-                    Some(Value::Int64(el)),
-                    Some(Value::String(sig)),
-                ) = (row.first(), row.get(1), row.get(2), row.get(3), row.get(4), row.get(5)) {
-                    candidates.push(SymbolInfo {
-                        id: id.clone(),
-                        name: name.clone(),
-                        kind: kind.clone(),
-                        start_line: *sl as usize,
-                        end_line: *el as usize,
-                        signature: sig.clone(),
-                    });
-                }
+            if fuzzy {
+                "MATCH (s:Symbol) WHERE LOWER(s.name) CONTAINS LOWER($target) RETURN s.id, s.name, s.kind, s.start_line, s.end_line, s.signature"
+            } else {
+                "MATCH (s:Symbol {name: $target}) RETURN s.id, s.name, s.kind, s.start_line, s.end_line, s.signature"
+            }
+        };
+        let mut stmt = conn.prepare(query_str)?;
+        let query_res = conn.execute(&mut stmt, vec![("target", Value::String(sym.to_string()))])?;
+        for row in query_res {
+            if let (
+                Some(Value::String(id)),
+                Some(Value::String(name)),
+                Some(Value::String(kind)),
+                Some(Value::Int64(sl)),
+                Some(Value::Int64(el)),
+                Some(Value::String(sig)),
+            ) = (row.first(), row.get(1), row.get(2), row.get(3), row.get(4), row.get(5)) {
+                candidates.push(SymbolInfo {
+                    id: id.clone(),
+                    name: name.clone(),
+                    kind: kind.clone(),
+                    start_line: *sl as usize,
+                    end_line: *el as usize,
+                    signature: sig.clone(),
+                });
             }
         }
 
@@ -306,11 +306,11 @@ pub fn run_context_internal(
             return Err(format!("Symbol '{}' not found", sym).into());
         }
         if candidates.len() > 1 {
-            writeln!(writer, "Warning: Multiple matches found for symbol '{}':", sym)?;
+            eprintln!("Warning: Multiple matches found for symbol '{}':", sym);
             for c in &candidates {
-                writeln!(writer, "  - {}", c.id)?;
+                eprintln!("  - {}", c.id);
             }
-            writeln!(writer, "Showing details for the first match: {}", candidates[0].id)?;
+            eprintln!("Showing details for the first match: {}", candidates[0].id);
         }
         target_symbol = Some(candidates[0].clone());
     } else if let Some(fl) = file_path {
@@ -343,11 +343,11 @@ pub fn run_context_internal(
             return Err(format!("File '{}' not found", fl).into());
         }
         if candidates.len() > 1 {
-            writeln!(writer, "Warning: Multiple matches found for file '{}':", fl)?;
+            eprintln!("Warning: Multiple matches found for file '{}':", fl);
             for c in &candidates {
-                writeln!(writer, "  - {}", c.path)?;
+                eprintln!("  - {}", c.path);
             }
-            writeln!(writer, "Showing details for the first match: {}", candidates[0].path)?;
+            eprintln!("Showing details for the first match: {}", candidates[0].path);
         }
         target_file = Some(candidates[0].clone());
     }
@@ -530,13 +530,13 @@ pub fn format_ascii_table(headers: &[String], rows: &[Vec<String>]) -> String {
             out.push_str(&format!(" {:<width$} |", cell, width = col_widths[i]));
         }
         if row.len() < headers.len() {
-            for i in row.len()..headers.len() {
-                out.push_str(&format!(" {:<width$} |", "", width = col_widths[i]));
+            for &width in col_widths.iter().take(headers.len()).skip(row.len()) {
+                out.push_str(&format!(" {:<width$} |", "", width = width));
             }
         }
         out.push('\n');
     }
-    out.push_str(&separator.trim_end());
+    out.push_str(separator.trim_end());
     out
 }
 
@@ -613,6 +613,16 @@ mod tests {
         let matches_fuzzy = resolve_symbol_candidates("LINK", true, &symbols);
         assert_eq!(matches_fuzzy.len(), 1);
         assert_eq!(matches_fuzzy[0].id, "src/linker.rs::run_linker");
+
+        // Exact symbol ID match
+        let matches_id = resolve_symbol_candidates("src/linker.rs::run_linker", false, &symbols);
+        assert_eq!(matches_id.len(), 1);
+        assert_eq!(matches_id[0].id, "src/linker.rs::run_linker");
+
+        // Fuzzy symbol ID match
+        let matches_id_fuzzy = resolve_symbol_candidates("linker.rs::run", true, &symbols);
+        assert_eq!(matches_id_fuzzy.len(), 1);
+        assert_eq!(matches_id_fuzzy[0].id, "src/linker.rs::run_linker");
     }
 
     #[test]
@@ -644,6 +654,21 @@ mod tests {
 
         assert!(out_str.contains("Context: src/main.rs::main"));
         assert!(out_str.contains("Function"));
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn test_invalid_format() {
+        let db_path = Path::new("test_format_val.lbug");
+        if db_path.exists() {
+            let _ = std::fs::remove_file(db_path);
+        }
+        let db = Database::new(db_path, SystemConfig::default()).unwrap();
+        let conn = Connection::new(&db).unwrap();
+        let mut out_buf = Vec::new();
+        let res = run_context_internal(&conn, Some("main"), None, false, "html", &mut out_buf);
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().to_string(), "Invalid output format 'html'. Supported formats are: markdown, json");
         let _ = std::fs::remove_file(db_path);
     }
 }

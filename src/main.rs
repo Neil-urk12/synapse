@@ -108,7 +108,7 @@ pub fn write_payload_to_db(
         }
 
         let chunks = crate::chunker::chunk_source(&payload.relative_path, &content, &analysis.nodes);
-        crate::chunker::insert_chunks(conn, &payload.relative_path, &chunks)?;
+        crate::chunker::insert_chunks(conn, &payload.relative_path, &payload.language, &chunks)?;
     }
 
     if verbose {
@@ -310,7 +310,7 @@ fn init_schema(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
         // Node Tables
         "CREATE NODE TABLE File (path STRING, language STRING, file_size INT64, hash STRING, raw_imports STRING, PRIMARY KEY (path))",
         "CREATE NODE TABLE Symbol (id STRING, name STRING, kind STRING, start_line INT64, start_col INT64, end_line INT64, signature STRING, raw_calls STRING, PRIMARY KEY (id))",
-        "CREATE NODE TABLE Chunk (id STRING, text STRING, embedding FLOAT[384], PRIMARY KEY (id))",
+        "CREATE NODE TABLE Chunk (id STRING, text STRING, language STRING, embedding FLOAT[384], PRIMARY KEY (id))",
         // Relationship Tables
         "CREATE REL TABLE CONTAINS (FROM File TO Symbol, FROM Symbol TO Symbol)",
         "CREATE REL TABLE IMPORTS (FROM File TO File)",
@@ -703,16 +703,58 @@ fn handle_embed(db_path: &Path, batch_size: usize, verbose: bool) -> Result<(), 
     let mut embedded = 0usize;
     let mut skipped = 0usize;
 
+    struct BatchState<'a> {
+        ids: &'a mut Vec<String>,
+        texts: &'a mut Vec<String>,
+        embedded: &'a mut usize,
+    }
+
+    fn flush_batch(
+        conn: &Connection,
+        update_stmt: &mut lbug::PreparedStatement,
+        model: &mut embedder::Embedder,
+        batch: &mut BatchState<'_>,
+        skipped: usize,
+        pb: &Option<indicatif::ProgressBar>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if batch.ids.is_empty() {
+            return Ok(());
+        }
+        let embeddings = model.embed(batch.texts)?;
+        for (i, emb) in embeddings.iter().enumerate() {
+            let lbug_list = Value::List(
+                lbug::LogicalType::Float,
+                emb.iter().map(|&f| Value::Float(f)).collect(),
+            );
+            conn.execute(
+                update_stmt,
+                vec![
+                    ("id", Value::String(batch.ids[i].clone())),
+                    ("embedding", lbug_list),
+                ],
+            )?;
+            *batch.embedded += 1;
+        }
+        if let Some(ref pb) = pb {
+            pb.set_position((*batch.embedded + skipped) as u64);
+        }
+        batch.ids.clear();
+        batch.texts.clear();
+        Ok(())
+    }
+
     for row in result {
         let (id, text, needs_embed) = match (row.first(), row.get(1), row.get(2)) {
-            (Some(Value::String(id)), Some(Value::String(text)), Some(embedding_val)) => {
-                let embedding_vec = match embedding_val {
-                    Value::List(_, ref items) => items.iter().map(|v| {
-                        if let Value::Float(f) = v { *f } else { 0.0 }
-                    }).collect::<Vec<f32>>(),
-                    _ => continue,
+            (Some(Value::String(id)), Some(Value::String(text)), embedding_val) => {
+                let needs = match embedding_val {
+                    Some(Value::List(_, ref items)) => {
+                        let embedding_vec = items.iter().map(|v| {
+                            if let Value::Float(f) = v { *f } else { 0.0 }
+                        }).collect::<Vec<f32>>();
+                        embedder::is_zero_vector(&embedding_vec)
+                    }
+                    _ => true,
                 };
-                let needs = embedder::is_zero_vector(&embedding_vec);
                 (id.clone(), text.clone(), needs)
             }
             _ => continue,
@@ -729,49 +771,11 @@ fn handle_embed(db_path: &Path, batch_size: usize, verbose: bool) -> Result<(), 
         }
 
         if batch_ids.len() >= batch_size {
-            let embeddings = model.embed(&batch_texts)?;
-            for (i, emb) in embeddings.iter().enumerate() {
-                let lbug_list = Value::List(
-                    lbug::LogicalType::Float,
-                    emb.iter().map(|&f| Value::Float(f)).collect(),
-                );
-                conn.execute(
-                    &mut update_stmt,
-                    vec![
-                        ("id", Value::String(batch_ids[i].clone())),
-                        ("embedding", lbug_list),
-                    ],
-                )?;
-                embedded += 1;
-            }
-            if let Some(ref pb) = pb {
-                pb.set_position((embedded + skipped) as u64);
-            }
-            batch_ids.clear();
-            batch_texts.clear();
+            flush_batch(&conn, &mut update_stmt, &mut model, &mut BatchState { ids: &mut batch_ids, texts: &mut batch_texts, embedded: &mut embedded }, skipped, &pb)?;
         }
     }
 
-    if !batch_ids.is_empty() {
-        let embeddings = model.embed(&batch_texts)?;
-        for (i, emb) in embeddings.iter().enumerate() {
-            let lbug_list = Value::List(
-                lbug::LogicalType::Float,
-                emb.iter().map(|&f| Value::Float(f)).collect(),
-            );
-            conn.execute(
-                &mut update_stmt,
-                vec![
-                    ("id", Value::String(batch_ids[i].clone())),
-                    ("embedding", lbug_list),
-                ],
-            )?;
-            embedded += 1;
-        }
-        if let Some(ref pb) = pb {
-            pb.set_position((embedded + skipped) as u64);
-        }
-    }
+    flush_batch(&conn, &mut update_stmt, &mut model, &mut BatchState { ids: &mut batch_ids, texts: &mut batch_texts, embedded: &mut embedded }, skipped, &pb)?;
 
     if let Some(pb) = pb {
         pb.finish_with_message("Done");
@@ -801,7 +805,7 @@ fn handle_similar(
 
     let vec_str = query_vec.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(", ");
     let search_query = format!(
-        "CALL QUERY_VECTOR_INDEX('Chunk', 'idx_chunk_vector', [{}], {}) YIELD node, distance RETURN node.id, node.text, distance",
+        "CALL QUERY_VECTOR_INDEX('Chunk', 'idx_chunk_vector', [{}], {}) YIELD node, distance RETURN node.id, node.text, node.language, distance",
         vec_str, limit
     );
 
@@ -810,6 +814,7 @@ fn handle_similar(
     struct ScoredChunk {
         id: String,
         text: String,
+        language: String,
         score: f32,
     }
 
@@ -824,14 +829,18 @@ fn handle_similar(
             Some(Value::String(s)) => s.clone(),
             _ => continue,
         };
-        let distance = match row.get(2) {
+        let language = match row.get(2) {
+            Some(Value::String(s)) => s.clone(),
+            _ => continue,
+        };
+        let distance = match row.get(3) {
             Some(Value::Float(f)) => *f,
             Some(Value::Int64(i)) => *i as f32,
             _ => continue,
         };
         let similarity = 1.0 - distance;
         if similarity >= threshold {
-            scored.push(ScoredChunk { id, text, score: similarity });
+            scored.push(ScoredChunk { id, text, language, score: similarity });
         }
     }
 
@@ -847,6 +856,7 @@ fn handle_similar(
                 serde_json::json!({
                     "chunk_id": s.id,
                     "score": s.score,
+                    "language": s.language,
                     "source_code": s.text,
                 })
             })
@@ -856,19 +866,7 @@ fn handle_similar(
         println!("# Similar to: \"{}\"\n", query);
         for s in &scored {
             println!("## {} (Score: {:.2})", s.id, s.score);
-            let extension = if s.id.ends_with(".rs") || s.id.contains(".rs::") {
-                "rust"
-            } else if s.id.contains(".ts::") || s.id.contains(".tsx::") {
-                "typescript"
-            } else if s.id.contains(".js::") || s.id.contains(".jsx::") {
-                "javascript"
-            } else if s.id.contains(".py::") {
-                "python"
-            } else if s.id.contains(".go::") {
-                "go"
-            } else {
-                ""
-            };
+            let extension = s.language.to_lowercase();
             println!("```{}\n{}\n```\n", extension, s.text);
         }
     }

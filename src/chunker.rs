@@ -78,6 +78,7 @@ pub fn chunk_source_with_options(
 pub fn insert_chunks(
     conn: &Connection,
     file_path: &str,
+    language: &str,
     chunks: &[CodeChunk],
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Cleanup old chunks
@@ -94,8 +95,8 @@ pub fn insert_chunks(
     // 2. Insert new chunks
     let mut prepared_chunk = conn.prepare(
         "MERGE (c:Chunk {id: $id}) \
-         ON CREATE SET c.text = $text, c.embedding = $embedding \
-         ON MATCH SET c.text = $text, c.embedding = $embedding"
+         ON CREATE SET c.text = $text, c.language = $language, c.embedding = $embedding \
+         ON MATCH SET c.text = $text, c.language = $language, c.embedding = $embedding"
     )?;
 
     let mut prepared_symbol_rel = conn.prepare(
@@ -114,6 +115,7 @@ pub fn insert_chunks(
         let chunk_params = vec![
             ("id", Value::String(chunk.id.clone())),
             ("text", Value::String(chunk.text.clone())),
+            ("language", Value::String(language.to_string())),
             ("embedding", zero_embedding.clone()),
         ];
         conn.execute(&mut prepared_chunk, chunk_params)?;
@@ -155,7 +157,7 @@ mod tests {
         // Initialize schema (including Chunk and DOCUMENTED_BY)
         conn.query("CREATE NODE TABLE File (path STRING, language STRING, file_size INT64, hash STRING, raw_imports STRING, PRIMARY KEY (path))").unwrap();
         conn.query("CREATE NODE TABLE Symbol (id STRING, name STRING, kind STRING, start_line INT64, start_col INT64, end_line INT64, signature STRING, raw_calls STRING, PRIMARY KEY (id))").unwrap();
-        conn.query("CREATE NODE TABLE Chunk (id STRING, text STRING, embedding FLOAT[384], PRIMARY KEY (id))").unwrap();
+        conn.query("CREATE NODE TABLE Chunk (id STRING, text STRING, language STRING, embedding FLOAT[384], PRIMARY KEY (id))").unwrap();
         conn.query("CREATE REL TABLE DOCUMENTED_BY (FROM File TO Chunk, FROM Symbol TO Chunk)").unwrap();
         conn.query("CREATE REL TABLE CONTAINS (FROM File TO Symbol, FROM Symbol TO Symbol)").unwrap();
 
@@ -181,7 +183,7 @@ mod tests {
             },
         ];
 
-        insert_chunks(&conn, "src/main.rs", &chunks).unwrap();
+        insert_chunks(&conn, "src/main.rs", "Rust", &chunks).unwrap();
 
         // 3. Verify chunks were inserted
         let chunk_query = conn.query("MATCH (c:Chunk) RETURN c.id, c.text").unwrap();

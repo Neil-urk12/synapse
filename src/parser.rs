@@ -59,6 +59,12 @@ impl ASTParser {
             "js" | "jsx" => Some(tree_sitter_javascript::language()),
             "ts" => Some(tree_sitter_typescript::language_typescript()),
             "tsx" => Some(tree_sitter_typescript::language_tsx()),
+            "go" => Some(tree_sitter_go::language()),
+            "py" => Some(tree_sitter_python::language()),
+            "c" => Some(tree_sitter_c::language()),
+            "cpp" | "cc" | "cxx" | "h" | "hpp" => Some(tree_sitter_cpp::language()),
+            "java" => Some(tree_sitter_java::language()),
+            "kt" | "kts" => Some(tree_sitter_kotlin::language()),
             _ => None,
         }
     }
@@ -127,6 +133,32 @@ impl ASTParser {
     }
 
     fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<String>) {
+        if ctx.file_path.ends_with(".go") {
+            Self::traverse_go(node, ctx, current_parent_id);
+            return;
+        }
+        if ctx.file_path.ends_with(".py") {
+            Self::traverse_python(node, ctx, current_parent_id);
+            return;
+        }
+        if ctx.file_path.ends_with(".cpp")
+            || ctx.file_path.ends_with(".cc")
+            || ctx.file_path.ends_with(".cxx")
+            || ctx.file_path.ends_with(".c")
+            || ctx.file_path.ends_with(".h")
+            || ctx.file_path.ends_with(".hpp")
+        {
+            Self::traverse_cpp(node, ctx, current_parent_id);
+            return;
+        }
+        if ctx.file_path.ends_with(".java") {
+            Self::traverse_java(node, ctx, current_parent_id);
+            return;
+        }
+        if ctx.file_path.ends_with(".kt") || ctx.file_path.ends_with(".kts") {
+            Self::traverse_kotlin(node, ctx, current_parent_id);
+            return;
+        }
         let kind = node.kind();
         let mut active_parent = current_parent_id.clone();
         let start_point = node.start_position();
@@ -413,6 +445,941 @@ impl ASTParser {
         if cursor.goto_first_child() {
             loop {
                 Self::traverse(cursor.node(), ctx, active_parent.clone());
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn extract_signature(node: Node, source: &[u8]) -> String {
+        let mut start_byte = node.start_byte();
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "decorator" {
+                    let end_byte = child.end_byte();
+                    if end_byte > start_byte {
+                        start_byte = end_byte;
+                    }
+                } else {
+                    break;
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        while start_byte < source.len() && source[start_byte].is_ascii_whitespace() {
+            start_byte += 1;
+        }
+
+        let mut end_line_byte = start_byte;
+        while end_line_byte < source.len() && source[end_line_byte] != b'\n' {
+            end_line_byte += 1;
+        }
+        String::from_utf8_lossy(&source[start_byte..end_line_byte])
+            .trim()
+            .to_string()
+    }
+
+    fn traverse_go(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<String>) {
+        let kind = node.kind();
+        let mut active_parent = current_parent_id.clone();
+        let start_point = node.start_position();
+        let end_point = node.end_position();
+
+        match kind {
+            "import_spec" => {
+                if let Some(path_node) = node.child_by_field_name("path") {
+                    let path = path_node
+                        .utf8_text(ctx.source)
+                        .unwrap_or("")
+                        .trim_matches(|c| c == '\'' || c == '"')
+                        .to_string();
+                    if !path.is_empty() {
+                        ctx.imports.push(RawImport {
+                            path,
+                            line: start_point.row + 1,
+                        });
+                    }
+                }
+            }
+            "call_expression" => {
+                if let Some(func_node) = node.child_by_field_name("function") {
+                    let name = func_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                    if func_node.kind() == "selector_expression" {
+                        if let Some(field_node) = func_node.child_by_field_name("field") {
+                            let method_name = field_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                            let is_valid = !method_name.is_empty()
+                                && method_name.chars().all(|c| c.is_alphanumeric() || c == '_');
+                            if is_valid {
+                                ctx.calls.push(RawCall {
+                                    name: method_name,
+                                    line: start_point.row + 1,
+                                    is_method: true,
+                                });
+                            }
+                        }
+                    } else {
+                        let is_valid = !name.is_empty()
+                            && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+                        if is_valid {
+                            ctx.calls.push(RawCall {
+                                name,
+                                line: start_point.row + 1,
+                                is_method: false,
+                            });
+                        }
+                    }
+                }
+            }
+            "function_declaration" | "method_declaration" => {
+                let name = if let Some(name_node) = node.child_by_field_name("name") {
+                    name_node.utf8_text(ctx.source).unwrap_or("anonymous").to_string()
+                } else {
+                    "anonymous".to_string()
+                };
+
+                let kind_label = if kind == "method_declaration" { "Method" } else { "Function" };
+                let mut go_parent = current_parent_id.clone();
+                if kind == "method_declaration" {
+                    if let Some(receiver_node) = node.child_by_field_name("receiver") {
+                        let mut cursor = receiver_node.walk();
+                        let mut found_type = None;
+                        loop {
+                            let r_child = cursor.node();
+                            if r_child.kind() == "parameter_declaration" {
+                                if let Some(type_node) = r_child.child_by_field_name("type") {
+                                    let type_text = type_node.utf8_text(ctx.source).unwrap_or("");
+                                    found_type = Some(type_text.trim_start_matches('*').trim().to_string());
+                                    break;
+                                }
+                            }
+                            if !cursor.goto_next_sibling() {
+                                break;
+                            }
+                        }
+                        if let Some(t_name) = found_type {
+                            go_parent = Some(format!("{}::{}", ctx.file_path, t_name));
+                        }
+                    }
+                }
+
+                let symbol_id = if let Some(ref parent) = go_parent {
+                    format!("{}::{}", parent, name)
+                } else {
+                    format!("{}::{}", ctx.file_path, name)
+                };
+
+                let signature = Self::extract_signature(node, ctx.source);
+
+                ctx.nodes.push(NodeData {
+                    id: symbol_id.clone(),
+                    name,
+                    kind: kind_label.to_string(),
+                    start_line: start_point.row + 1,
+                    start_col: start_point.column + 1,
+                    end_line: end_point.row + 1,
+                    signature,
+                });
+
+                let from_id = go_parent.unwrap_or_else(|| ctx.file_path.to_string());
+                ctx.edges.push(EdgeData {
+                    from_id,
+                    to_id: symbol_id.clone(),
+                    edge_type: "CONTAINS".to_string(),
+                    line: start_point.row + 1,
+                });
+
+                active_parent = Some(symbol_id);
+            }
+            "type_declaration" => {
+                let mut cursor = node.walk();
+                if cursor.goto_first_child() {
+                    loop {
+                        let child = cursor.node();
+                        if child.kind() == "type_spec" {
+                            if let Some(name_node) = child.child_by_field_name("name") {
+                                let name = name_node.utf8_text(ctx.source).unwrap_or("anonymous").to_string();
+                                if let Some(type_node) = child.child_by_field_name("type") {
+                                    let kind_label = match type_node.kind() {
+                                        "struct_type" => "Struct",
+                                        "interface_type" => "Interface",
+                                        _ => "",
+                                    };
+                                    if !kind_label.is_empty() {
+                                        let symbol_id = if let Some(ref parent) = current_parent_id {
+                                            format!("{}::{}", parent, name)
+                                        } else {
+                                            format!("{}::{}", ctx.file_path, name)
+                                        };
+
+                                        let signature = Self::extract_signature(node, ctx.source);
+
+                                        ctx.nodes.push(NodeData {
+                                            id: symbol_id.clone(),
+                                            name,
+                                            kind: kind_label.to_string(),
+                                            start_line: start_point.row + 1,
+                                            start_col: start_point.column + 1,
+                                            end_line: end_point.row + 1,
+                                            signature,
+                                        });
+
+                                        let from_id = current_parent_id.as_deref().unwrap_or(ctx.file_path).to_string();
+                                        ctx.edges.push(EdgeData {
+                                            from_id,
+                                            to_id: symbol_id.clone(),
+                                            edge_type: "CONTAINS".to_string(),
+                                            line: start_point.row + 1,
+                                        });
+
+                                        active_parent = Some(symbol_id);
+                                    }
+                                }
+                            }
+                        }
+                        if !cursor.goto_next_sibling() {
+                            break;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                Self::traverse_go(cursor.node(), ctx, active_parent.clone());
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn traverse_python(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<String>) {
+        let kind = node.kind();
+        let mut active_parent = current_parent_id.clone();
+        let start_point = node.start_position();
+        let end_point = node.end_position();
+
+        match kind {
+            "import_statement" => {
+                let mut cursor = node.walk();
+                if cursor.goto_first_child() {
+                    loop {
+                        let child = cursor.node();
+                        if child.kind() == "dotted_name" {
+                            let path = child.utf8_text(ctx.source).unwrap_or("").to_string();
+                            if !path.is_empty() {
+                                ctx.imports.push(RawImport {
+                                    path,
+                                    line: start_point.row + 1,
+                                });
+                            }
+                        }
+                        if !cursor.goto_next_sibling() {
+                            break;
+                        }
+                    }
+                }
+            }
+            "import_from_statement" => {
+                let mut module_path = String::new();
+                let mut cursor = node.walk();
+                if cursor.goto_first_child() {
+                    let mut is_after_from = false;
+                    let mut is_after_import = false;
+                    loop {
+                        let child = cursor.node();
+                        if child.kind() == "from" {
+                            is_after_from = true;
+                        } else if child.kind() == "import" {
+                            is_after_import = true;
+                            is_after_from = false;
+                        } else if is_after_from {
+                            if child.kind() == "dotted_name" || child.kind() == "relative_import" {
+                                module_path = child.utf8_text(ctx.source).unwrap_or("").to_string();
+                                if !module_path.is_empty() {
+                                    ctx.imports.push(RawImport {
+                                        path: module_path.clone(),
+                                        line: start_point.row + 1,
+                                    });
+                                }
+                            }
+                        } else if is_after_import
+                            && (child.kind() == "dotted_name"
+                                || child.kind() == "identifier"
+                                || child.kind() == "aliased_import")
+                        {
+                            let mut name_text = child.utf8_text(ctx.source).unwrap_or("").to_string();
+                            if child.kind() == "aliased_import" {
+                                if let Some(name_node) = child.child_by_field_name("name") {
+                                    name_text = name_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                                }
+                            }
+                            if !name_text.is_empty() && !module_path.is_empty() {
+                                ctx.imports.push(RawImport {
+                                    path: format!("{}::{}", module_path, name_text),
+                                    line: start_point.row + 1,
+                                });
+                            }
+                        }
+                        if !cursor.goto_next_sibling() {
+                            break;
+                        }
+                    }
+                }
+            }
+            "call" => {
+                if let Some(func_node) = node.child_by_field_name("function") {
+                    let name = func_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                    if func_node.kind() == "attribute" {
+                        if let Some(attribute_node) = func_node.child_by_field_name("attribute") {
+                            let method_name = attribute_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                            let is_valid = !method_name.is_empty()
+                                && method_name.chars().all(|c| c.is_alphanumeric() || c == '_');
+                            if is_valid {
+                                ctx.calls.push(RawCall {
+                                    name: method_name,
+                                    line: start_point.row + 1,
+                                    is_method: true,
+                                });
+                            }
+                        }
+                    } else {
+                        let is_valid = !name.is_empty()
+                            && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+                        if is_valid {
+                            ctx.calls.push(RawCall {
+                                name,
+                                line: start_point.row + 1,
+                                is_method: false,
+                            });
+                        }
+                    }
+                }
+            }
+            "class_definition" => {
+                let name = if let Some(name_node) = node.child_by_field_name("name") {
+                    name_node.utf8_text(ctx.source).unwrap_or("anonymous").to_string()
+                } else {
+                    "anonymous".to_string()
+                };
+
+                let symbol_id = if let Some(ref parent) = current_parent_id {
+                    format!("{}::{}", parent, name)
+                } else {
+                    format!("{}::{}", ctx.file_path, name)
+                };
+
+                let signature = Self::extract_signature(node, ctx.source);
+
+                ctx.nodes.push(NodeData {
+                    id: symbol_id.clone(),
+                    name,
+                    kind: "Class".to_string(),
+                    start_line: start_point.row + 1,
+                    start_col: start_point.column + 1,
+                    end_line: end_point.row + 1,
+                    signature,
+                });
+
+                let from_id = current_parent_id.as_deref().unwrap_or(ctx.file_path).to_string();
+                ctx.edges.push(EdgeData {
+                    from_id,
+                    to_id: symbol_id.clone(),
+                    edge_type: "CONTAINS".to_string(),
+                    line: start_point.row + 1,
+                });
+
+                active_parent = Some(symbol_id);
+            }
+            "function_definition" => {
+                let name = if let Some(name_node) = node.child_by_field_name("name") {
+                    name_node.utf8_text(ctx.source).unwrap_or("anonymous").to_string()
+                } else {
+                    "anonymous".to_string()
+                };
+
+                let mut is_method = false;
+                if let Some(ref parent) = current_parent_id {
+                    if let Some(parent_node) = ctx.nodes.iter().find(|n| &n.id == parent) {
+                        if parent_node.kind == "Class" {
+                            is_method = true;
+                        }
+                    }
+                }
+
+                let kind_label = if is_method { "Method" } else { "Function" };
+
+                let symbol_id = if let Some(ref parent) = current_parent_id {
+                    format!("{}::{}", parent, name)
+                } else {
+                    format!("{}::{}", ctx.file_path, name)
+                };
+
+                let signature = Self::extract_signature(node, ctx.source);
+
+                ctx.nodes.push(NodeData {
+                    id: symbol_id.clone(),
+                    name,
+                    kind: kind_label.to_string(),
+                    start_line: start_point.row + 1,
+                    start_col: start_point.column + 1,
+                    end_line: end_point.row + 1,
+                    signature,
+                });
+
+                let from_id = current_parent_id.as_deref().unwrap_or(ctx.file_path).to_string();
+                ctx.edges.push(EdgeData {
+                    from_id,
+                    to_id: symbol_id.clone(),
+                    edge_type: "CONTAINS".to_string(),
+                    line: start_point.row + 1,
+                });
+
+                active_parent = Some(symbol_id);
+            }
+            _ => {}
+        }
+
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                Self::traverse_python(cursor.node(), ctx, active_parent.clone());
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn traverse_cpp(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<String>) {
+        let kind = node.kind();
+        let mut active_parent = current_parent_id.clone();
+        let start_point = node.start_position();
+        let end_point = node.end_position();
+
+        match kind {
+            "preproc_include" => {
+                if let Some(path_node) = node.child(1) {
+                    let path = path_node
+                        .utf8_text(ctx.source)
+                        .unwrap_or("")
+                        .trim_matches(|c| c == '<' || c == '>' || c == '"')
+                        .to_string();
+                    if !path.is_empty() {
+                        ctx.imports.push(RawImport {
+                            path,
+                            line: start_point.row + 1,
+                        });
+                    }
+                }
+            }
+            "call_expression" => {
+                if let Some(func_node) = node.child_by_field_name("function") {
+                    let mut name = func_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                    if func_node.kind() == "field_expression" {
+                        if let Some(field_node) = func_node.child_by_field_name("field") {
+                            let method_name = field_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                            let is_valid = !method_name.is_empty()
+                                && method_name.chars().all(|c| c.is_alphanumeric() || c == '_');
+                            if is_valid {
+                                ctx.calls.push(RawCall {
+                                    name: method_name,
+                                    line: start_point.row + 1,
+                                    is_method: true,
+                                });
+                            }
+                        }
+                    } else if func_node.kind() == "pointer_expression" {
+                        let mut inner_cursor = func_node.walk();
+                        if inner_cursor.goto_first_child() {
+                            loop {
+                                let c_node = inner_cursor.node();
+                                if c_node.kind() == "field" {
+                                    let method_name = c_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                                    ctx.calls.push(RawCall {
+                                        name: method_name,
+                                        line: start_point.row + 1,
+                                        is_method: true,
+                                    });
+                                    break;
+                                }
+                                if !inner_cursor.goto_next_sibling() {
+                                    break;
+                                }
+                            }
+                        }
+                    } else {
+                        if name.contains("::") {
+                            if let Some(last_segment) = name.split("::").last() {
+                                name = last_segment.to_string();
+                            }
+                        }
+                        let is_valid = !name.is_empty()
+                            && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+                        if is_valid {
+                            ctx.calls.push(RawCall {
+                                name,
+                                line: start_point.row + 1,
+                                is_method: false,
+                            });
+                        }
+                    }
+                }
+            }
+            "class_specifier" | "struct_specifier" | "namespace_definition" => {
+                let name = if let Some(name_node) = node.child_by_field_name("name") {
+                    name_node.utf8_text(ctx.source).unwrap_or("anonymous").to_string()
+                } else {
+                    "anonymous".to_string()
+                };
+
+                let kind_label = match kind {
+                    "class_specifier" => "Class",
+                    "struct_specifier" => "Struct",
+                    "namespace_definition" => "Namespace",
+                    _ => "Symbol",
+                };
+
+                let symbol_id = if let Some(ref parent) = current_parent_id {
+                    format!("{}::{}", parent, name)
+                } else {
+                    format!("{}::{}", ctx.file_path, name)
+                };
+
+                let signature = Self::extract_signature(node, ctx.source);
+
+                ctx.nodes.push(NodeData {
+                    id: symbol_id.clone(),
+                    name,
+                    kind: kind_label.to_string(),
+                    start_line: start_point.row + 1,
+                    start_col: start_point.column + 1,
+                    end_line: end_point.row + 1,
+                    signature,
+                });
+
+                let from_id = current_parent_id.as_deref().unwrap_or(ctx.file_path).to_string();
+                ctx.edges.push(EdgeData {
+                    from_id,
+                    to_id: symbol_id.clone(),
+                    edge_type: "CONTAINS".to_string(),
+                    line: start_point.row + 1,
+                });
+
+                active_parent = Some(symbol_id);
+            }
+            "function_definition" => {
+                let mut name = "anonymous".to_string();
+                let mut go_parent = current_parent_id.clone();
+                
+                if let Some(declarator) = node.child_by_field_name("declarator") {
+                    let mut cursor = declarator.walk();
+                    loop {
+                        let current_n = cursor.node();
+                        if current_n.kind() == "function_declarator" {
+                            if let Some(decl) = current_n.child_by_field_name("declarator") {
+                                if decl.kind() == "qualified_identifier" {
+                                    let qual_text = decl.utf8_text(ctx.source).unwrap_or("");
+                                    if let Some(ns_sep_idx) = qual_text.rfind("::") {
+                                        let class_part = &qual_text[..ns_sep_idx];
+                                        let method_part = &qual_text[ns_sep_idx + 2..];
+                                        name = method_part.to_string();
+                                        go_parent = Some(format!("{}::{}", ctx.file_path, class_part));
+                                    } else {
+                                        name = qual_text.to_string();
+                                    }
+                                } else {
+                                    name = decl.utf8_text(ctx.source).unwrap_or("anonymous").to_string();
+                                }
+                            }
+                            break;
+                        }
+                        if !cursor.goto_first_child() {
+                            break;
+                        }
+                    }
+                }
+
+                let mut is_method = false;
+                if let Some(ref parent) = go_parent {
+                    if let Some(parent_node) = ctx.nodes.iter().find(|n| &n.id == parent) {
+                        if parent_node.kind == "Class" || parent_node.kind == "Struct" {
+                            is_method = true;
+                        }
+                    }
+                }
+                let kind_label = if is_method { "Method" } else { "Function" };
+
+                let symbol_id = if let Some(ref parent) = go_parent {
+                    format!("{}::{}", parent, name)
+                } else {
+                    format!("{}::{}", ctx.file_path, name)
+                };
+
+                let signature = Self::extract_signature(node, ctx.source);
+
+                ctx.nodes.push(NodeData {
+                    id: symbol_id.clone(),
+                    name,
+                    kind: kind_label.to_string(),
+                    start_line: start_point.row + 1,
+                    start_col: start_point.column + 1,
+                    end_line: end_point.row + 1,
+                    signature,
+                });
+
+                let from_id = go_parent.unwrap_or_else(|| ctx.file_path.to_string());
+                ctx.edges.push(EdgeData {
+                    from_id,
+                    to_id: symbol_id.clone(),
+                    edge_type: "CONTAINS".to_string(),
+                    line: start_point.row + 1,
+                });
+
+                active_parent = Some(symbol_id);
+            }
+            _ => {}
+        }
+
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                Self::traverse_cpp(cursor.node(), ctx, active_parent.clone());
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn traverse_java(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<String>) {
+        let kind = node.kind();
+        let mut active_parent = current_parent_id.clone();
+        let start_point = node.start_position();
+        let end_point = node.end_position();
+
+        match kind {
+            "import_declaration" => {
+                let mut cursor = node.walk();
+                if cursor.goto_first_child() {
+                    loop {
+                        let child = cursor.node();
+                        if child.kind() == "scoped_identifier" || child.kind() == "identifier" {
+                            let path = child.utf8_text(ctx.source).unwrap_or("").to_string();
+                            if !path.is_empty() {
+                                ctx.imports.push(RawImport {
+                                    path,
+                                    line: start_point.row + 1,
+                                });
+                            }
+                            break;
+                        }
+                        if !cursor.goto_next_sibling() {
+                            break;
+                        }
+                    }
+                }
+            }
+            "method_invocation" => {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = name_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                    let has_receiver = node.child_by_field_name("object").is_some();
+                    let is_valid = !name.is_empty()
+                        && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+                    if is_valid {
+                        ctx.calls.push(RawCall {
+                            name,
+                            line: start_point.row + 1,
+                            is_method: has_receiver,
+                        });
+                    }
+                }
+            }
+            "class_declaration" | "interface_declaration" => {
+                let name = if let Some(name_node) = node.child_by_field_name("name") {
+                    name_node.utf8_text(ctx.source).unwrap_or("anonymous").to_string()
+                } else {
+                    "anonymous".to_string()
+                };
+
+                let kind_label = if kind == "class_declaration" { "Class" } else { "Interface" };
+
+                let symbol_id = if let Some(ref parent) = current_parent_id {
+                    format!("{}::{}", parent, name)
+                } else {
+                    format!("{}::{}", ctx.file_path, name)
+                };
+
+                let signature = Self::extract_signature(node, ctx.source);
+
+                ctx.nodes.push(NodeData {
+                    id: symbol_id.clone(),
+                    name,
+                    kind: kind_label.to_string(),
+                    start_line: start_point.row + 1,
+                    start_col: start_point.column + 1,
+                    end_line: end_point.row + 1,
+                    signature,
+                });
+
+                let from_id = current_parent_id.as_deref().unwrap_or(ctx.file_path).to_string();
+                ctx.edges.push(EdgeData {
+                    from_id,
+                    to_id: symbol_id.clone(),
+                    edge_type: "CONTAINS".to_string(),
+                    line: start_point.row + 1,
+                });
+
+                active_parent = Some(symbol_id);
+            }
+            "method_declaration" | "constructor_declaration" => {
+                let name = if let Some(name_node) = node.child_by_field_name("name") {
+                    name_node.utf8_text(ctx.source).unwrap_or("anonymous").to_string()
+                } else {
+                    "anonymous".to_string()
+                };
+
+                let kind_label = if kind == "constructor_declaration" { "Constructor" } else { "Method" };
+
+                let symbol_id = if let Some(ref parent) = current_parent_id {
+                    format!("{}::{}", parent, name)
+                } else {
+                    format!("{}::{}", ctx.file_path, name)
+                };
+
+                let signature = Self::extract_signature(node, ctx.source);
+
+                ctx.nodes.push(NodeData {
+                    id: symbol_id.clone(),
+                    name,
+                    kind: kind_label.to_string(),
+                    start_line: start_point.row + 1,
+                    start_col: start_point.column + 1,
+                    end_line: end_point.row + 1,
+                    signature,
+                });
+
+                let from_id = current_parent_id.as_deref().unwrap_or(ctx.file_path).to_string();
+                ctx.edges.push(EdgeData {
+                    from_id,
+                    to_id: symbol_id.clone(),
+                    edge_type: "CONTAINS".to_string(),
+                    line: start_point.row + 1,
+                });
+
+                active_parent = Some(symbol_id);
+            }
+            _ => {}
+        }
+
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                Self::traverse_java(cursor.node(), ctx, active_parent.clone());
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn traverse_kotlin(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<String>) {
+        let kind = node.kind();
+        let mut active_parent = current_parent_id.clone();
+        let start_point = node.start_position();
+        let end_point = node.end_position();
+
+        match kind {
+            "import_header" => {
+                let mut cursor = node.walk();
+                if cursor.goto_first_child() {
+                    loop {
+                        let child = cursor.node();
+                        if child.kind() == "identifier" {
+                            let path = child.utf8_text(ctx.source).unwrap_or("").to_string();
+                            if !path.is_empty() {
+                                ctx.imports.push(RawImport {
+                                    path,
+                                    line: start_point.row + 1,
+                                });
+                            }
+                            break;
+                        }
+                        if !cursor.goto_next_sibling() {
+                            break;
+                        }
+                    }
+                }
+            }
+            "call_expression" => {
+                let mut name = String::new();
+                let mut has_receiver = false;
+                
+                let mut cursor = node.walk();
+                if cursor.goto_first_child() {
+                    let first_child = cursor.node();
+                    if first_child.kind() == "navigation_expression" {
+                        has_receiver = true;
+                        let mut inner_cursor = first_child.walk();
+                        if inner_cursor.goto_first_child() {
+                            loop {
+                                let suffix_node = inner_cursor.node();
+                                if suffix_node.kind() == "navigation_suffix" {
+                                    let mut suffix_cursor = suffix_node.walk();
+                                    if suffix_cursor.goto_first_child() {
+                                        loop {
+                                            let target = suffix_cursor.node();
+                                            if target.kind() == "simple_identifier" {
+                                                name = target.utf8_text(ctx.source).unwrap_or("").to_string();
+                                                break;
+                                            }
+                                            if !suffix_cursor.goto_next_sibling() {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    break;
+                                }
+                                if !inner_cursor.goto_next_sibling() {
+                                    break;
+                                }
+                            }
+                        }
+                    } else if first_child.kind() == "simple_identifier" {
+                        name = first_child.utf8_text(ctx.source).unwrap_or("").to_string();
+                    }
+                }
+                
+                let is_valid = !name.is_empty()
+                    && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+                if is_valid {
+                    ctx.calls.push(RawCall {
+                        name,
+                        line: start_point.row + 1,
+                        is_method: has_receiver,
+                    });
+                }
+            }
+            "class_declaration" | "object_declaration" | "interface_declaration" => {
+                let mut name = "anonymous".to_string();
+                let mut cursor = node.walk();
+                if cursor.goto_first_child() {
+                    loop {
+                        let child = cursor.node();
+                        if child.kind() == "simple_identifier" || child.kind() == "type_identifier" {
+                            name = child.utf8_text(ctx.source).unwrap_or("anonymous").to_string();
+                            break;
+                        }
+                        if !cursor.goto_next_sibling() {
+                            break;
+                        }
+                    }
+                }
+
+                let kind_label = match kind {
+                    "class_declaration" => "Class",
+                    "object_declaration" => "Class",
+                    "interface_declaration" => "Interface",
+                    _ => "Symbol",
+                };
+
+                let symbol_id = if let Some(ref parent) = current_parent_id {
+                    format!("{}::{}", parent, name)
+                } else {
+                    format!("{}::{}", ctx.file_path, name)
+                };
+
+                let signature = Self::extract_signature(node, ctx.source);
+
+                ctx.nodes.push(NodeData {
+                    id: symbol_id.clone(),
+                    name,
+                    kind: kind_label.to_string(),
+                    start_line: start_point.row + 1,
+                    start_col: start_point.column + 1,
+                    end_line: end_point.row + 1,
+                    signature,
+                });
+
+                let from_id = current_parent_id.as_deref().unwrap_or(ctx.file_path).to_string();
+                ctx.edges.push(EdgeData {
+                    from_id,
+                    to_id: symbol_id.clone(),
+                    edge_type: "CONTAINS".to_string(),
+                    line: start_point.row + 1,
+                });
+
+                active_parent = Some(symbol_id);
+            }
+            "function_declaration" => {
+                let mut name = "anonymous".to_string();
+                let mut cursor = node.walk();
+                if cursor.goto_first_child() {
+                    loop {
+                        let child = cursor.node();
+                        if child.kind() == "simple_identifier" {
+                            name = child.utf8_text(ctx.source).unwrap_or("anonymous").to_string();
+                            break;
+                        }
+                        if !cursor.goto_next_sibling() {
+                            break;
+                        }
+                    }
+                }
+
+                let mut is_method = false;
+                if let Some(ref parent) = current_parent_id {
+                    if let Some(parent_node) = ctx.nodes.iter().find(|n| &n.id == parent) {
+                        if parent_node.kind == "Class" {
+                            is_method = true;
+                        }
+                    }
+                }
+                let kind_label = if is_method { "Method" } else { "Function" };
+
+                let symbol_id = if let Some(ref parent) = current_parent_id {
+                    format!("{}::{}", parent, name)
+                } else {
+                    format!("{}::{}", ctx.file_path, name)
+                };
+
+                let signature = Self::extract_signature(node, ctx.source);
+
+                ctx.nodes.push(NodeData {
+                    id: symbol_id.clone(),
+                    name,
+                    kind: kind_label.to_string(),
+                    start_line: start_point.row + 1,
+                    start_col: start_point.column + 1,
+                    end_line: end_point.row + 1,
+                    signature,
+                });
+
+                let from_id = current_parent_id.as_deref().unwrap_or(ctx.file_path).to_string();
+                ctx.edges.push(EdgeData {
+                    from_id,
+                    to_id: symbol_id.clone(),
+                    edge_type: "CONTAINS".to_string(),
+                    line: start_point.row + 1,
+                });
+
+                active_parent = Some(symbol_id);
+            }
+            _ => {}
+        }
+
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                Self::traverse_kotlin(cursor.node(), ctx, active_parent.clone());
                 if !cursor.goto_next_sibling() {
                     break;
                 }
@@ -764,5 +1731,162 @@ mod tests {
             expand_rust_import("crate::{a::{b, c}, d}"),
             vec!["crate::a::b", "crate::a::c", "crate::d"]
         );
+    }
+
+    #[test]
+    fn test_go_parsing() {
+        let code = r#"
+            package main
+            import (
+                "fmt"
+                "math"
+            )
+            type MyStruct struct {
+                val int
+            }
+            type MyInterface interface {
+                DoWork()
+            }
+            func (m *MyStruct) Process(x int) {
+                fmt.Println(x)
+            }
+            func main() {
+                var s MyStruct
+                s.Process(10)
+            }
+        "#;
+        let path = Path::new("test.go");
+        let FileAnalysis { nodes, edges: _, imports, calls } = ASTParser::parse_file(path, code);
+
+        assert!(!nodes.is_empty(), "Go nodes should not be empty");
+        assert!(imports.iter().any(|i| i.path == "fmt"));
+        assert!(imports.iter().any(|i| i.path == "math"));
+
+        let process_node = nodes.iter().find(|n| n.name == "Process").expect("Process method not found");
+        assert_eq!(process_node.kind, "Method");
+
+        let struct_node = nodes.iter().find(|n| n.name == "MyStruct").expect("MyStruct struct not found");
+        assert_eq!(struct_node.kind, "Struct");
+
+        assert!(calls.iter().any(|c| c.name == "Process" && c.is_method));
+    }
+
+    #[test]
+    fn test_python_parsing() {
+        let code = r#"
+import os
+from datetime import datetime
+
+class Helper:
+    def greet(self):
+        print("Hello")
+
+def run():
+    h = Helper()
+    h.greet()
+        "#;
+        let path = Path::new("test.py");
+        let FileAnalysis { nodes, edges: _, imports, calls } = ASTParser::parse_file(path, code);
+
+        assert!(!nodes.is_empty(), "Python nodes should not be empty");
+        assert!(imports.iter().any(|i| i.path == "os"));
+        assert!(imports.iter().any(|i| i.path == "datetime"));
+
+        let class_node = nodes.iter().find(|n| n.name == "Helper").expect("Helper class not found");
+        assert_eq!(class_node.kind, "Class");
+
+        let greet_node = nodes.iter().find(|n| n.name == "greet").expect("greet method not found");
+        assert_eq!(greet_node.kind, "Method");
+
+        let run_node = nodes.iter().find(|n| n.name == "run").expect("run function not found");
+        assert_eq!(run_node.kind, "Function");
+
+        assert!(calls.iter().any(|c| c.name == "greet" && c.is_method));
+    }
+
+    #[test]
+    fn test_cpp_parsing() {
+        let code = r#"
+            #include "helper.h"
+            namespace ns {
+                class Runner {
+                public:
+                    void run() {}
+                };
+            }
+            int main() {
+                ns::Runner r;
+                r.run();
+                return 0;
+            }
+        "#;
+        let path = Path::new("test.cpp");
+        let FileAnalysis { nodes, edges: _, imports, calls } = ASTParser::parse_file(path, code);
+
+        assert!(!nodes.is_empty(), "C++ nodes should not be empty");
+        assert!(imports.iter().any(|i| i.path == "helper.h"));
+
+        let ns_node = nodes.iter().find(|n| n.name == "ns").expect("Namespace ns not found");
+        assert_eq!(ns_node.kind, "Namespace");
+
+        let runner_node = nodes.iter().find(|n| n.name == "Runner").expect("Runner class not found");
+        assert_eq!(runner_node.kind, "Class");
+
+        let run_node = nodes.iter().find(|n| n.name == "run").expect("run method not found");
+        assert_eq!(run_node.kind, "Method");
+
+        assert!(calls.iter().any(|c| c.name == "run" && c.is_method));
+    }
+
+    #[test]
+    fn test_java_parsing() {
+        let code = r#"
+            import java.util.List;
+            public class Application {
+                public Application() {}
+                public void start() {
+                    System.out.println("Started");
+                }
+            }
+        "#;
+        let path = Path::new("test.java");
+        let FileAnalysis { nodes, edges: _, imports, calls } = ASTParser::parse_file(path, code);
+
+        assert!(!nodes.is_empty(), "Java nodes should not be empty");
+        assert!(imports.iter().any(|i| i.path == "java.util.List"));
+
+        let class_node = nodes.iter().find(|n| n.name == "Application").expect("Application class not found");
+        assert_eq!(class_node.kind, "Class");
+
+        let method_node = nodes.iter().find(|n| n.name == "start").expect("start method not found");
+        assert_eq!(method_node.kind, "Method");
+
+        assert!(calls.iter().any(|c| c.name == "println" && c.is_method));
+    }
+
+    #[test]
+    fn test_kotlin_parsing() {
+        let code = r#"
+            import foo.bar.Baz
+            class Service {
+                fun execute() {
+                    val x = Baz()
+                    x.doSomething()
+                }
+            }
+        "#;
+        let path = Path::new("test.kt");
+        let FileAnalysis { nodes, edges: _, imports, calls } = ASTParser::parse_file(path, code);
+
+        assert!(!nodes.is_empty(), "Kotlin nodes should not be empty");
+        assert!(imports.iter().any(|i| i.path == "foo.bar.Baz"));
+
+        let class_node = nodes.iter().find(|n| n.name == "Service").expect("Service class not found");
+        assert_eq!(class_node.kind, "Class");
+
+        let method_node = nodes.iter().find(|n| n.name == "execute").expect("execute method not found");
+        assert_eq!(method_node.kind, "Method");
+
+        assert!(calls.iter().any(|c| c.name == "doSomething" && c.is_method));
     }
 }

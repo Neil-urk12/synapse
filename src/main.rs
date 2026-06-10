@@ -429,28 +429,40 @@ async fn main() {
             let verbose_writer = verbose;
             let db_path_clone = db_path.clone();
             let db_writer = std::thread::spawn(move || {
-                let db = Database::new(&db_path_clone, SystemConfig::default()).unwrap();
-                let conn = Connection::new(&db).unwrap();
+                let db = match Database::new(&db_path_clone, SystemConfig::default()) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!("Error: DB writer failed to open database '{}': {}", db_path_clone.display(), e);
+                        return (0u64, 0u64);
+                    }
+                };
+                let conn = match Connection::new(&db) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("Error: DB writer failed to connect: {}", e);
+                        return (0u64, 0u64);
+                    }
+                };
                 
                 let mut prepared_file_upsert = conn.prepare(
                     "MERGE (f:File {path: $path}) \
                      ON CREATE SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports \
                      ON MATCH SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports"
-                ).unwrap();
+                ).expect("Bug: file_upsert prepare failed (hardcoded SQL)");
                 let mut prepared_delete_symbols = conn.prepare(
                     "MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol) DETACH DELETE s"
-                ).unwrap();
+                ).expect("Bug: delete_symbols prepare failed (hardcoded SQL)");
                 let mut prepared_symbol_create = conn.prepare(
                     "MERGE (s:Symbol {id: $id}) \
                      ON CREATE SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls \
                      ON MATCH SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls"
-                ).unwrap();
+                ).expect("Bug: symbol_create prepare failed (hardcoded SQL)");
                 let mut prepared_containment_file = conn.prepare(
                     "MATCH (f:File {path: $from_id}), (s:Symbol {id: $to_id}) MERGE (f)-[:CONTAINS]->(s)"
-                ).unwrap();
+                ).expect("Bug: containment_file prepare failed (hardcoded SQL)");
                 let mut prepared_containment_symbol = conn.prepare(
                     "MATCH (p:Symbol {id: $from_id}), (c:Symbol {id: $to_id}) MERGE (p)-[:CONTAINS]->(c)"
-                ).unwrap();
+                ).expect("Bug: containment_symbol prepare failed (hardcoded SQL)");
 
                 let mut stmts = PreparedStatements {
                     file_upsert: &mut prepared_file_upsert,
@@ -564,7 +576,7 @@ async fn main() {
             drop(tx); // Close channel
 
             // Wait for writes to finish
-            let (file_count_res, byte_count_res) = db_writer.join().unwrap();
+            let (file_count_res, byte_count_res) = db_writer.join().expect("Bug: DB writer thread panic");
             let file_count = file_count_res;
             let byte_count = byte_count_res;
             let skip_count = skip_count_atomic.load(std::sync::atomic::Ordering::SeqCst);

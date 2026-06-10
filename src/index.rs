@@ -186,7 +186,6 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
 
     let (tx, rx) = std::sync::mpsc::sync_channel::<ParsedPayload>(100);
 
-    let verbose_writer = verbose;
     let db_path_clone = db_path.clone();
     let db_writer = std::thread::spawn(move || {
         let db = match Database::new(&db_path_clone, SystemConfig::default()) {
@@ -238,7 +237,7 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
         while let Ok(payload) = rx.recv() {
             let size = payload.size;
             let path = payload.relative_path.clone();
-            match write_payload_to_db(&conn, payload, &mut stmts, verbose_writer) {
+            match write_payload_to_db(&conn, payload, &mut stmts, verbose) {
                 Ok(_) => {
                     local_file_count += 1;
                     local_byte_count += size;

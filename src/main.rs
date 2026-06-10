@@ -6,6 +6,7 @@ pub mod index;
 pub mod linker;
 pub mod parser;
 pub mod query_cli;
+pub mod resolver;
 pub mod schema;
 pub mod similar;
 

@@ -1,4 +1,5 @@
 pub mod chunker;
+pub mod embedder;
 pub mod linker;
 pub mod parser;
 pub mod query_cli;
@@ -228,6 +229,41 @@ enum Commands {
         /// Path to the LadybugDB database storage file
         #[arg(short, long, default_value = "synapse.lbug")]
         db: PathBuf,
+    },
+    /// Compute semantic embeddings for all code chunks
+    Embed {
+        /// Path to the LadybugDB database storage file
+        #[arg(short, long, default_value = "synapse.lbug")]
+        db: PathBuf,
+
+        /// Batch size for embedding computation
+        #[arg(short, long, default_value = "256")]
+        batch_size: usize,
+
+        /// Enable verbose output with progress
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    /// Search code chunks by semantic similarity
+    Similar {
+        /// Natural language query to search for
+        query: String,
+
+        /// Path to the LadybugDB database storage file
+        #[arg(short, long, default_value = "synapse.lbug")]
+        db: PathBuf,
+
+        /// Maximum number of results
+        #[arg(short, long, default_value = "5")]
+        limit: usize,
+
+        /// Minimum cosine similarity threshold (0.0-1.0)
+        #[arg(short, long, default_value = "0.5")]
+        threshold: f32,
+
+        /// Output format: markdown or json
+        #[arg(long, default_value = "markdown")]
+        format: String,
     },
 }
 
@@ -587,7 +623,257 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::Embed { db, batch_size, verbose } => {
+            if let Err(err) = handle_embed(&db, batch_size, verbose) {
+                eprintln!("Error: {}", err);
+                std::process::exit(1);
+            }
+        }
+        Commands::Similar { query, db, limit, threshold, format } => {
+            if let Err(err) = handle_similar(&query, &db, limit, threshold, &format) {
+                eprintln!("Error: {}", err);
+                std::process::exit(1);
+            }
+        }
     }
+}
+
+fn handle_embed(db_path: &Path, batch_size: usize, verbose: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let db = Database::new(db_path, SystemConfig::default())?;
+    let conn = Connection::new(&db)?;
+
+    init_schema(&conn)?;
+
+    let index_ddl = "CREATE VECTOR INDEX idx_chunk_vector ON Chunk(embedding) USING HNSW WITH (metric = 'cosine', m = 16, ef_construction = 200, ef_search = 100)";
+    if let Err(e) = conn.query(index_ddl) {
+        let err_msg = e.to_string().to_lowercase();
+        if !err_msg.contains("already exists") && !err_msg.contains("duplicate") {
+            eprintln!("Warning: Failed to create vector index: {}", e);
+        }
+    }
+
+    let count_query = "MATCH (c:Chunk) RETURN count(c)";
+    let total_chunks: usize = {
+        let count_result = conn.query(count_query)?;
+        count_result
+            .into_iter()
+            .next()
+            .and_then(|row| row.into_iter().next())
+            .and_then(|v| {
+                if let Value::Int64(n) = v {
+                    Some(n as usize)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0)
+    };
+
+    if total_chunks == 0 {
+        println!("No chunks to embed. Database has no chunk nodes.");
+        return Ok(());
+    }
+
+    if verbose {
+        println!("🧠 Embedding chunks...");
+        println!("Model: BGE-small-en-v1.5 (384-dim)");
+        println!("Chunks in DB: {}", total_chunks);
+    }
+
+    let mut model = embedder::Embedder::try_new()?;
+    let pb = if verbose {
+        let pb = indicatif::ProgressBar::new(total_chunks as u64);
+        pb.set_style(
+            indicatif::ProgressStyle::default_bar()
+                .template("{bar:40} {pos}/{len} ({eta})")
+                .unwrap()
+                .progress_chars("█▉▊▋▌▍▎▏ "),
+        );
+        Some(pb)
+    } else {
+        None
+    };
+
+    let mut stmt = conn.prepare("MATCH (c:Chunk) RETURN c.id, c.text, c.embedding")?;
+    let result = conn.execute(&mut stmt, vec![])?;
+
+    let mut update_stmt = conn.prepare("MATCH (c:Chunk {id: $id}) SET c.embedding = $embedding")?;
+    let mut batch_ids: Vec<String> = Vec::with_capacity(batch_size);
+    let mut batch_texts: Vec<String> = Vec::with_capacity(batch_size);
+    let mut embedded = 0usize;
+    let mut skipped = 0usize;
+
+    for row in result {
+        let (id, text, needs_embed) = match (row.first(), row.get(1), row.get(2)) {
+            (Some(Value::String(id)), Some(Value::String(text)), Some(embedding_val)) => {
+                let embedding_vec = match embedding_val {
+                    Value::List(_, ref items) => items.iter().map(|v| {
+                        if let Value::Float(f) = v { *f } else { 0.0 }
+                    }).collect::<Vec<f32>>(),
+                    _ => continue,
+                };
+                let needs = embedder::is_zero_vector(&embedding_vec);
+                (id.clone(), text.clone(), needs)
+            }
+            _ => continue,
+        };
+
+        if needs_embed {
+            batch_ids.push(id);
+            batch_texts.push(text);
+        } else {
+            skipped += 1;
+            if let Some(ref pb) = pb {
+                pb.set_position((embedded + skipped) as u64);
+            }
+        }
+
+        if batch_ids.len() >= batch_size {
+            let embeddings = model.embed(&batch_texts)?;
+            for (i, emb) in embeddings.iter().enumerate() {
+                let lbug_list = Value::List(
+                    lbug::LogicalType::Float,
+                    emb.iter().map(|&f| Value::Float(f)).collect(),
+                );
+                conn.execute(
+                    &mut update_stmt,
+                    vec![
+                        ("id", Value::String(batch_ids[i].clone())),
+                        ("embedding", lbug_list),
+                    ],
+                )?;
+                embedded += 1;
+            }
+            if let Some(ref pb) = pb {
+                pb.set_position((embedded + skipped) as u64);
+            }
+            batch_ids.clear();
+            batch_texts.clear();
+        }
+    }
+
+    if !batch_ids.is_empty() {
+        let embeddings = model.embed(&batch_texts)?;
+        for (i, emb) in embeddings.iter().enumerate() {
+            let lbug_list = Value::List(
+                lbug::LogicalType::Float,
+                emb.iter().map(|&f| Value::Float(f)).collect(),
+            );
+            conn.execute(
+                &mut update_stmt,
+                vec![
+                    ("id", Value::String(batch_ids[i].clone())),
+                    ("embedding", lbug_list),
+                ],
+            )?;
+            embedded += 1;
+        }
+        if let Some(ref pb) = pb {
+            pb.set_position((embedded + skipped) as u64);
+        }
+    }
+
+    if let Some(pb) = pb {
+        pb.finish_with_message("Done");
+    }
+
+    if embedded == 0 {
+        println!("No chunks to embed. All {} chunks already have embeddings.", skipped);
+    } else {
+        println!("✅ Embedding complete. {} chunks embedded ({} skipped, already had embeddings).", embedded, skipped);
+    }
+    Ok(())
+}
+
+fn handle_similar(
+    query: &str,
+    db_path: &Path,
+    limit: usize,
+    threshold: f32,
+    format: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let db = Database::new(db_path, SystemConfig::default())?;
+    let conn = Connection::new(&db)?;
+
+    let mut model = embedder::Embedder::try_new()?;
+    let query_emb = model.embed(&[query.to_string()])?;
+    let query_vec = &query_emb[0];
+
+    let vec_str = query_vec.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(", ");
+    let search_query = format!(
+        "CALL QUERY_VECTOR_INDEX('Chunk', 'idx_chunk_vector', [{}], {}) YIELD node, distance RETURN node.id, node.text, distance",
+        vec_str, limit
+    );
+
+    let result = conn.query(&search_query)?;
+
+    struct ScoredChunk {
+        id: String,
+        text: String,
+        score: f32,
+    }
+
+    let mut scored: Vec<ScoredChunk> = Vec::new();
+
+    for row in result {
+        let id = match row.first() {
+            Some(Value::String(s)) => s.clone(),
+            _ => continue,
+        };
+        let text = match row.get(1) {
+            Some(Value::String(s)) => s.clone(),
+            _ => continue,
+        };
+        let distance = match row.get(2) {
+            Some(Value::Float(f)) => *f,
+            Some(Value::Int64(i)) => *i as f32,
+            _ => continue,
+        };
+        let similarity = 1.0 - distance;
+        if similarity >= threshold {
+            scored.push(ScoredChunk { id, text, score: similarity });
+        }
+    }
+
+    if scored.is_empty() {
+        println!("No similar chunks found. Try lowering --threshold or running `synapse embed` first.");
+        return Ok(());
+    }
+
+    if format == "json" {
+        let results: Vec<serde_json::Value> = scored
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "chunk_id": s.id,
+                    "score": s.score,
+                    "source_code": s.text,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&results)?);
+    } else {
+        println!("# Similar to: \"{}\"\n", query);
+        for s in &scored {
+            println!("## {} (Score: {:.2})", s.id, s.score);
+            let extension = if s.id.ends_with(".rs") || s.id.contains(".rs::") {
+                "rust"
+            } else if s.id.contains(".ts::") || s.id.contains(".tsx::") {
+                "typescript"
+            } else if s.id.contains(".js::") || s.id.contains(".jsx::") {
+                "javascript"
+            } else if s.id.contains(".py::") {
+                "python"
+            } else if s.id.contains(".go::") {
+                "go"
+            } else {
+                ""
+            };
+            println!("```{}\n{}\n```\n", extension, s.text);
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -663,6 +949,56 @@ mod tests {
                 assert_eq!(db, PathBuf::from("test_db.lbug"));
             }
             _ => panic!("Expected Dependencies variant"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parsing_embed() {
+        let args = vec![
+            "synapse",
+            "embed",
+            "-d",
+            "test.lbug",
+            "-b",
+            "128",
+            "-v",
+        ];
+        let parsed = Cli::try_parse_from(args).unwrap();
+        match parsed.command {
+            Commands::Embed { db, batch_size, verbose } => {
+                assert_eq!(db, PathBuf::from("test.lbug"));
+                assert_eq!(batch_size, 128);
+                assert!(verbose);
+            }
+            _ => panic!("Expected Embed variant"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parsing_similar() {
+        let args = vec![
+            "synapse",
+            "similar",
+            "error handling",
+            "-d",
+            "test.lbug",
+            "--limit",
+            "10",
+            "--threshold",
+            "0.7",
+            "--format",
+            "json",
+        ];
+        let parsed = Cli::try_parse_from(args).unwrap();
+        match parsed.command {
+            Commands::Similar { query, db, limit, threshold, format } => {
+                assert_eq!(query, "error handling");
+                assert_eq!(db, PathBuf::from("test.lbug"));
+                assert_eq!(limit, 10);
+                assert!((threshold - 0.7).abs() < 0.001);
+                assert_eq!(format, "json");
+            }
+            _ => panic!("Expected Similar variant"),
         }
     }
 

@@ -1,12 +1,5 @@
-use crate::parser::NodeData;
+use crate::types::ast::{CodeChunk, NodeData};
 use lbug::{Connection, Value};
-
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct CodeChunk {
-    pub id: String,
-    pub text: String,
-    pub symbol_id: Option<String>,
-}
 
 pub fn chunk_source(path: &str, content: &str, nodes: &[NodeData]) -> Vec<CodeChunk> {
     chunk_source_with_options(path, content, nodes, 30, 5)

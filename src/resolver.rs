@@ -1,20 +1,7 @@
-use crate::parser::{RawCall, RawImport};
+use crate::types::ast::{RawCall, RawImport};
+use crate::types::db::{FileRecord, SymbolRecord};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct FileRecord {
-    pub path: String,
-    pub raw_imports: String,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct SymbolRecord {
-    pub id: String,
-    pub name: String,
-    pub kind: String,
-    pub raw_calls: String,
-}
 
 fn normalize_path(path: &Path) -> PathBuf {
     use std::path::Component;

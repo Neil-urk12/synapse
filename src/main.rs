@@ -9,6 +9,7 @@ pub mod query_cli;
 pub mod resolver;
 pub mod schema;
 pub mod similar;
+pub mod types;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;

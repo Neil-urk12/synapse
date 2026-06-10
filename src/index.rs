@@ -6,15 +6,7 @@ use std::path::PathBuf;
 
 use crate::file_utils;
 use crate::schema;
-
-pub struct ParsedPayload {
-    pub relative_path: String,
-    pub language: String,
-    pub size: u64,
-    pub hash: String,
-    pub analysis: Option<crate::parser::FileAnalysis>,
-    pub content: Option<String>,
-}
+use crate::types::db::ParsedPayload;
 
 pub struct PreparedStatements<'a> {
     pub file_upsert: &'a mut lbug::PreparedStatement,
@@ -72,7 +64,7 @@ pub fn write_payload_to_db(
     if let (Some(analysis), Some(content)) = (payload.analysis, payload.content) {
         for node in &analysis.nodes {
             let mut raw_calls_str = "[]".to_string();
-            let symbol_calls: Vec<crate::parser::RawCall> = analysis
+            let symbol_calls: Vec<crate::types::ast::RawCall> = analysis
                 .calls
                 .iter()
                 .filter(|c| c.line >= node.start_line && c.line <= node.end_line)

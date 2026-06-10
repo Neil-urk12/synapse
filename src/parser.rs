@@ -1,44 +1,6 @@
+use crate::types::ast::{EdgeData, FileAnalysis, NodeData, RawCall, RawImport};
 use std::path::Path;
 use tree_sitter::{Language, Node, Parser};
-
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct RawImport {
-    pub path: String,
-    pub line: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct RawCall {
-    pub name: String,
-    pub line: usize,
-    pub is_method: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct FileAnalysis {
-    pub nodes: Vec<NodeData>,
-    pub edges: Vec<EdgeData>,
-    pub imports: Vec<RawImport>,
-    pub calls: Vec<RawCall>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct NodeData {
-    pub id: String,
-    pub name: String,
-    pub kind: String, // "Function", "Class", "Struct", "Method", "Interface", "Implementation", etc.
-    pub start_line: usize,
-    pub start_col: usize,
-    pub end_line: usize,
-    pub signature: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct EdgeData {
-    pub from_id: String,
-    pub to_id: String,
-    pub edge_type: String, // "CONTAINS"
-}
 
 struct TraverseContext<'a> {
     source: &'a [u8],

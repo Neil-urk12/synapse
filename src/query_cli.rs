@@ -1,21 +1,6 @@
 use lbug::{Connection, Database, SystemConfig, Value};
+use crate::types::query::{CalleeInfo, CallerInfo, ContainedSymbolInfo, ContextPayload, FileInfo, SymbolInfo};
 use std::path::Path;
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct SymbolInfo {
-    pub id: String,
-    pub name: String,
-    pub kind: String,
-    pub start_line: usize,
-    pub end_line: usize,
-    pub signature: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct FileInfo {
-    pub path: String,
-    pub language: String,
-}
 
 pub fn run_query_internal(
     conn: &Connection,
@@ -95,24 +80,6 @@ pub fn slice_source_code(content: &str, start_line: usize, end_line: usize) -> S
         return String::new();
     }
     lines[start_idx..end_idx].join("\n")
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct CallerInfo {
-    pub id: String,
-    pub name: String,
-    pub kind: String,
-    pub signature: String,
-    pub call_site_line: usize,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct CalleeInfo {
-    pub id: String,
-    pub name: String,
-    pub kind: String,
-    pub signature: String,
-    pub call_site_line: usize,
 }
 
 pub fn fetch_callers(
@@ -221,14 +188,6 @@ pub fn fetch_imported_by(
     Ok(imported_by)
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct ContainedSymbolInfo {
-    pub id: String,
-    pub name: String,
-    pub kind: String,
-    pub signature: String,
-}
-
 pub fn fetch_contained_symbols(
     conn: &Connection,
     file_path: &str,
@@ -256,18 +215,6 @@ pub fn fetch_contained_symbols(
         }
     }
     Ok(symbols)
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct ContextPayload {
-    pub symbol: Option<SymbolInfo>,
-    pub file: Option<FileInfo>,
-    pub source_code: String,
-    pub callers: Vec<CallerInfo>,
-    pub callees: Vec<CalleeInfo>,
-    pub imports: Vec<String>,
-    pub imported_by: Vec<String>,
-    pub contained_symbols: Vec<ContainedSymbolInfo>,
 }
 
 pub fn run_context_internal(

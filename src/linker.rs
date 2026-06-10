@@ -1,4 +1,5 @@
-use crate::resolver::{self, FileRecord, SymbolRecord};
+use crate::resolver::{self};
+use crate::types::db::{FileRecord, SymbolRecord};
 use lbug::{Connection, Value};
 
 pub fn run_linker(conn: &Connection, verbose: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -90,7 +91,7 @@ pub fn run_linker(conn: &Connection, verbose: bool) -> Result<(), Box<dyn std::e
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::{RawCall, RawImport};
+    use crate::types::ast::{RawCall, RawImport};
     use lbug::{Connection, Database, SystemConfig};
     use std::path::Path;
 

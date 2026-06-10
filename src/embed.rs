@@ -1,10 +1,14 @@
-use std::path::Path;
 use lbug::{Connection, Database, SystemConfig, Value};
+use std::path::Path;
 
-use crate::schema;
 use crate::embedder;
+use crate::schema;
 
-pub fn handle_embed(db_path: &Path, batch_size: usize, verbose: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn handle_embed(
+    db_path: &Path,
+    batch_size: usize,
+    verbose: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let db = Database::new(db_path, SystemConfig::default())?;
     let conn = Connection::new(&db)?;
 
@@ -114,9 +118,10 @@ pub fn handle_embed(db_path: &Path, batch_size: usize, verbose: bool) -> Result<
             (Some(Value::String(id)), Some(Value::String(text)), embedding_val) => {
                 let needs = match embedding_val {
                     Some(Value::List(_, ref items)) => {
-                        let embedding_vec = items.iter().map(|v| {
-                            if let Value::Float(f) = v { *f } else { 0.0 }
-                        }).collect::<Vec<f32>>();
+                        let embedding_vec = items
+                            .iter()
+                            .map(|v| if let Value::Float(f) = v { *f } else { 0.0 })
+                            .collect::<Vec<f32>>();
                         embedder::is_zero_vector(&embedding_vec)
                     }
                     _ => true,
@@ -137,20 +142,48 @@ pub fn handle_embed(db_path: &Path, batch_size: usize, verbose: bool) -> Result<
         }
 
         if batch_ids.len() >= batch_size {
-            flush_batch(&conn, &mut update_stmt, &mut model, &mut BatchState { ids: &mut batch_ids, texts: &mut batch_texts, embedded: &mut embedded }, skipped, &pb)?;
+            flush_batch(
+                &conn,
+                &mut update_stmt,
+                &mut model,
+                &mut BatchState {
+                    ids: &mut batch_ids,
+                    texts: &mut batch_texts,
+                    embedded: &mut embedded,
+                },
+                skipped,
+                &pb,
+            )?;
         }
     }
 
-    flush_batch(&conn, &mut update_stmt, &mut model, &mut BatchState { ids: &mut batch_ids, texts: &mut batch_texts, embedded: &mut embedded }, skipped, &pb)?;
+    flush_batch(
+        &conn,
+        &mut update_stmt,
+        &mut model,
+        &mut BatchState {
+            ids: &mut batch_ids,
+            texts: &mut batch_texts,
+            embedded: &mut embedded,
+        },
+        skipped,
+        &pb,
+    )?;
 
     if let Some(pb) = pb {
         pb.finish_with_message("Done");
     }
 
     if embedded == 0 {
-        println!("No chunks to embed. All {} chunks already have embeddings.", skipped);
+        println!(
+            "No chunks to embed. All {} chunks already have embeddings.",
+            skipped
+        );
     } else {
-        println!("✅ Embedding complete. {} chunks embedded ({} skipped, already had embeddings).", embedded, skipped);
+        println!(
+            "✅ Embedding complete. {} chunks embedded ({} skipped, already had embeddings).",
+            embedded, skipped
+        );
     }
     Ok(())
 }

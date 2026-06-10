@@ -1,5 +1,5 @@
-use std::path::Path;
 use lbug::{Connection, Database, SystemConfig, Value};
+use std::path::Path;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SymbolInfo {
@@ -29,11 +29,7 @@ pub fn run_query_internal(
     for row in result {
         let row_strs: Vec<String> = row
             .iter()
-            .map(|val| {
-                val.to_string()
-                    .replace('\n', "\\n")
-                    .replace('\r', "\\r")
-            })
+            .map(|val| val.to_string().replace('\n', "\\n").replace('\r', "\\r"))
             .collect();
         rows.push(row_strs);
     }
@@ -75,11 +71,7 @@ pub fn resolve_symbol_candidates(
         .collect()
 }
 
-pub fn resolve_file_candidates(
-    target: &str,
-    fuzzy: bool,
-    pool: &[FileInfo],
-) -> Vec<FileInfo> {
+pub fn resolve_file_candidates(target: &str, fuzzy: bool, pool: &[FileInfo]) -> Vec<FileInfo> {
     pool.iter()
         .filter(|f| {
             if fuzzy {
@@ -123,12 +115,18 @@ pub struct CalleeInfo {
     pub call_site_line: usize,
 }
 
-pub fn fetch_callers(conn: &Connection, target_id: &str) -> Result<Vec<CallerInfo>, Box<dyn std::error::Error>> {
+pub fn fetch_callers(
+    conn: &Connection,
+    target_id: &str,
+) -> Result<Vec<CallerInfo>, Box<dyn std::error::Error>> {
     let mut stmt = conn.prepare(
         "MATCH (s1:Symbol)-[r:CALLS]->(s2:Symbol {id: $target_id}) \
-         RETURN s1.id, s1.name, s1.kind, s1.signature, r.call_site_line"
+         RETURN s1.id, s1.name, s1.kind, s1.signature, r.call_site_line",
     )?;
-    let query_res = conn.execute(&mut stmt, vec![("target_id", Value::String(target_id.to_string()))])?;
+    let query_res = conn.execute(
+        &mut stmt,
+        vec![("target_id", Value::String(target_id.to_string()))],
+    )?;
     let mut callers = Vec::new();
     for row in query_res {
         if let (
@@ -137,7 +135,8 @@ pub fn fetch_callers(conn: &Connection, target_id: &str) -> Result<Vec<CallerInf
             Some(Value::String(kind)),
             Some(Value::String(sig)),
             Some(Value::Int64(line)),
-        ) = (row.first(), row.get(1), row.get(2), row.get(3), row.get(4)) {
+        ) = (row.first(), row.get(1), row.get(2), row.get(3), row.get(4))
+        {
             callers.push(CallerInfo {
                 id: id.clone(),
                 name: name.clone(),
@@ -150,12 +149,18 @@ pub fn fetch_callers(conn: &Connection, target_id: &str) -> Result<Vec<CallerInf
     Ok(callers)
 }
 
-pub fn fetch_callees(conn: &Connection, target_id: &str) -> Result<Vec<CalleeInfo>, Box<dyn std::error::Error>> {
+pub fn fetch_callees(
+    conn: &Connection,
+    target_id: &str,
+) -> Result<Vec<CalleeInfo>, Box<dyn std::error::Error>> {
     let mut stmt = conn.prepare(
         "MATCH (s1:Symbol {id: $target_id})-[r:CALLS]->(s2:Symbol) \
-         RETURN s2.id, s2.name, s2.kind, s2.signature, r.call_site_line"
+         RETURN s2.id, s2.name, s2.kind, s2.signature, r.call_site_line",
     )?;
-    let query_res = conn.execute(&mut stmt, vec![("target_id", Value::String(target_id.to_string()))])?;
+    let query_res = conn.execute(
+        &mut stmt,
+        vec![("target_id", Value::String(target_id.to_string()))],
+    )?;
     let mut callees = Vec::new();
     for row in query_res {
         if let (
@@ -164,7 +169,8 @@ pub fn fetch_callees(conn: &Connection, target_id: &str) -> Result<Vec<CalleeInf
             Some(Value::String(kind)),
             Some(Value::String(sig)),
             Some(Value::Int64(line)),
-        ) = (row.first(), row.get(1), row.get(2), row.get(3), row.get(4)) {
+        ) = (row.first(), row.get(1), row.get(2), row.get(3), row.get(4))
+        {
             callees.push(CalleeInfo {
                 id: id.clone(),
                 name: name.clone(),
@@ -177,9 +183,16 @@ pub fn fetch_callees(conn: &Connection, target_id: &str) -> Result<Vec<CalleeInf
     Ok(callees)
 }
 
-pub fn fetch_imports(conn: &Connection, file_path: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let mut stmt = conn.prepare("MATCH (f1:File {path: $path})-[:IMPORTS]->(f2:File) RETURN f2.path")?;
-    let query_res = conn.execute(&mut stmt, vec![("path", Value::String(file_path.to_string()))])?;
+pub fn fetch_imports(
+    conn: &Connection,
+    file_path: &str,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut stmt =
+        conn.prepare("MATCH (f1:File {path: $path})-[:IMPORTS]->(f2:File) RETURN f2.path")?;
+    let query_res = conn.execute(
+        &mut stmt,
+        vec![("path", Value::String(file_path.to_string()))],
+    )?;
     let mut imports = Vec::new();
     for row in query_res {
         if let Some(Value::String(import_path)) = row.first() {
@@ -189,9 +202,16 @@ pub fn fetch_imports(conn: &Connection, file_path: &str) -> Result<Vec<String>, 
     Ok(imports)
 }
 
-pub fn fetch_imported_by(conn: &Connection, file_path: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let mut stmt = conn.prepare("MATCH (f1:File)-[:IMPORTS]->(f2:File {path: $path}) RETURN f1.path")?;
-    let query_res = conn.execute(&mut stmt, vec![("path", Value::String(file_path.to_string()))])?;
+pub fn fetch_imported_by(
+    conn: &Connection,
+    file_path: &str,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut stmt =
+        conn.prepare("MATCH (f1:File)-[:IMPORTS]->(f2:File {path: $path}) RETURN f1.path")?;
+    let query_res = conn.execute(
+        &mut stmt,
+        vec![("path", Value::String(file_path.to_string()))],
+    )?;
     let mut imported_by = Vec::new();
     for row in query_res {
         if let Some(Value::String(imported_path)) = row.first() {
@@ -209,9 +229,15 @@ pub struct ContainedSymbolInfo {
     pub signature: String,
 }
 
-pub fn fetch_contained_symbols(conn: &Connection, file_path: &str) -> Result<Vec<ContainedSymbolInfo>, Box<dyn std::error::Error>> {
+pub fn fetch_contained_symbols(
+    conn: &Connection,
+    file_path: &str,
+) -> Result<Vec<ContainedSymbolInfo>, Box<dyn std::error::Error>> {
     let mut stmt = conn.prepare("MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol) RETURN s.id, s.name, s.kind, s.signature")?;
-    let query_res = conn.execute(&mut stmt, vec![("path", Value::String(file_path.to_string()))])?;
+    let query_res = conn.execute(
+        &mut stmt,
+        vec![("path", Value::String(file_path.to_string()))],
+    )?;
     let mut symbols = Vec::new();
     for row in query_res {
         if let (
@@ -219,7 +245,8 @@ pub fn fetch_contained_symbols(conn: &Connection, file_path: &str) -> Result<Vec
             Some(Value::String(name)),
             Some(Value::String(kind)),
             Some(Value::String(sig)),
-        ) = (row.first(), row.get(1), row.get(2), row.get(3)) {
+        ) = (row.first(), row.get(1), row.get(2), row.get(3))
+        {
             symbols.push(ContainedSymbolInfo {
                 id: id.clone(),
                 name: name.clone(),
@@ -230,7 +257,6 @@ pub fn fetch_contained_symbols(conn: &Connection, file_path: &str) -> Result<Vec
     }
     Ok(symbols)
 }
-
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ContextPayload {
@@ -253,7 +279,11 @@ pub fn run_context_internal(
     writer: &mut dyn std::io::Write,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if format != "markdown" && format != "json" {
-        return Err(format!("Invalid output format '{}'. Supported formats are: markdown, json", format).into());
+        return Err(format!(
+            "Invalid output format '{}'. Supported formats are: markdown, json",
+            format
+        )
+        .into());
     }
     if symbol_name.is_some() && file_path.is_some() {
         return Err("Options --symbol and --file are mutually exclusive".into());
@@ -281,7 +311,8 @@ pub fn run_context_internal(
             }
         };
         let mut stmt = conn.prepare(query_str)?;
-        let query_res = conn.execute(&mut stmt, vec![("target", Value::String(sym.to_string()))])?;
+        let query_res =
+            conn.execute(&mut stmt, vec![("target", Value::String(sym.to_string()))])?;
         for row in query_res {
             if let (
                 Some(Value::String(id)),
@@ -290,7 +321,14 @@ pub fn run_context_internal(
                 Some(Value::Int64(sl)),
                 Some(Value::Int64(el)),
                 Some(Value::String(sig)),
-            ) = (row.first(), row.get(1), row.get(2), row.get(3), row.get(4), row.get(5)) {
+            ) = (
+                row.first(),
+                row.get(1),
+                row.get(2),
+                row.get(3),
+                row.get(4),
+                row.get(5),
+            ) {
                 candidates.push(SymbolInfo {
                     id: id.clone(),
                     name: name.clone(),
@@ -317,9 +355,12 @@ pub fn run_context_internal(
         let mut candidates = Vec::new();
         if fuzzy {
             let mut stmt = conn.prepare("MATCH (f:File) WHERE LOWER(f.path) CONTAINS LOWER($target) RETURN f.path, f.language")?;
-            let query_res = conn.execute(&mut stmt, vec![("target", Value::String(fl.to_string()))])?;
+            let query_res =
+                conn.execute(&mut stmt, vec![("target", Value::String(fl.to_string()))])?;
             for row in query_res {
-                if let (Some(Value::String(path)), Some(Value::String(lang))) = (row.first(), row.get(1)) {
+                if let (Some(Value::String(path)), Some(Value::String(lang))) =
+                    (row.first(), row.get(1))
+                {
                     candidates.push(FileInfo {
                         path: path.clone(),
                         language: lang.clone(),
@@ -327,10 +368,14 @@ pub fn run_context_internal(
                 }
             }
         } else {
-            let mut stmt = conn.prepare("MATCH (f:File {path: $target}) RETURN f.path, f.language")?;
-            let query_res = conn.execute(&mut stmt, vec![("target", Value::String(fl.to_string()))])?;
+            let mut stmt =
+                conn.prepare("MATCH (f:File {path: $target}) RETURN f.path, f.language")?;
+            let query_res =
+                conn.execute(&mut stmt, vec![("target", Value::String(fl.to_string()))])?;
             for row in query_res {
-                if let (Some(Value::String(path)), Some(Value::String(lang))) = (row.first(), row.get(1)) {
+                if let (Some(Value::String(path)), Some(Value::String(lang))) =
+                    (row.first(), row.get(1))
+                {
                     candidates.push(FileInfo {
                         path: path.clone(),
                         language: lang.clone(),
@@ -347,7 +392,10 @@ pub fn run_context_internal(
             for c in &candidates {
                 eprintln!("  - {}", c.path);
             }
-            eprintln!("Showing details for the first match: {}", candidates[0].path);
+            eprintln!(
+                "Showing details for the first match: {}",
+                candidates[0].path
+            );
         }
         target_file = Some(candidates[0].clone());
     }
@@ -365,7 +413,7 @@ pub fn run_context_internal(
     if let Some(ref sym) = target_symbol {
         callers = fetch_callers(conn, &sym.id)?;
         callees = fetch_callees(conn, &sym.id)?;
-        
+
         if let Some(first_seg) = sym.id.split("::").next() {
             file_path_to_read = Some(first_seg.to_string());
             imports = fetch_imports(conn, first_seg)?;
@@ -409,7 +457,11 @@ pub fn run_context_internal(
             writeln!(writer, "# Context: {} ({})", sym.id, sym.kind)?;
             writeln!(writer, "\n## Signature\n`{}`", sym.signature)?;
             if let Some(ref p) = file_path_to_read {
-                writeln!(writer, "\n## Source Code ({}:{}-{})", p, sym.start_line, sym.end_line)?;
+                writeln!(
+                    writer,
+                    "\n## Source Code ({}:{}-{})",
+                    p, sym.start_line, sym.end_line
+                )?;
                 let syntax = if p.ends_with(".rs") {
                     "rust"
                 } else if p.ends_with(".js") || p.ends_with(".jsx") {
@@ -441,13 +493,21 @@ pub fn run_context_internal(
             if !payload.callers.is_empty() {
                 writeln!(writer, "### Callers")?;
                 for caller in &payload.callers {
-                    writeln!(writer, "* `{}` (kind: {}, line: {})", caller.id, caller.kind, caller.call_site_line)?;
+                    writeln!(
+                        writer,
+                        "* `{}` (kind: {}, line: {})",
+                        caller.id, caller.kind, caller.call_site_line
+                    )?;
                 }
             }
             if !payload.callees.is_empty() {
                 writeln!(writer, "### Callees")?;
                 for callee in &payload.callees {
-                    writeln!(writer, "* `{}` (kind: {}, line: {})", callee.id, callee.kind, callee.call_site_line)?;
+                    writeln!(
+                        writer,
+                        "* `{}` (kind: {}, line: {})",
+                        callee.id, callee.kind, callee.call_site_line
+                    )?;
                 }
             }
         }
@@ -501,10 +561,16 @@ pub fn run_callers_internal(
     writer: &mut dyn std::io::Write,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if format != "table" && format != "markdown" && format != "json" {
-        return Err(format!("Invalid format '{}'. Supported: table, markdown, json", format).into());
+        return Err(format!(
+            "Invalid format '{}'. Supported: table, markdown, json",
+            format
+        )
+        .into());
     }
 
-    let mut stmt_all = conn.prepare("MATCH (s:Symbol) RETURN s.id, s.name, s.kind, s.start_line, s.end_line, s.signature")?;
+    let mut stmt_all = conn.prepare(
+        "MATCH (s:Symbol) RETURN s.id, s.name, s.kind, s.start_line, s.end_line, s.signature",
+    )?;
     let query_all = conn.execute(&mut stmt_all, vec![])?;
     let mut all_symbols = Vec::new();
     for row in query_all {
@@ -515,7 +581,14 @@ pub fn run_callers_internal(
             Some(Value::Int64(sl)),
             Some(Value::Int64(el)),
             Some(Value::String(sig)),
-        ) = (row.first(), row.get(1), row.get(2), row.get(3), row.get(4), row.get(5)) {
+        ) = (
+            row.first(),
+            row.get(1),
+            row.get(2),
+            row.get(3),
+            row.get(4),
+            row.get(5),
+        ) {
             all_symbols.push(SymbolInfo {
                 id: id.clone(),
                 name: name.clone(),
@@ -546,7 +619,11 @@ pub fn run_callers_internal(
             writeln!(writer, "\nNo callers found.")?;
         } else {
             for c in &callers {
-                writeln!(writer, "* `{}` (kind: {}, line: {})", c.id, c.kind, c.call_site_line)?;
+                writeln!(
+                    writer,
+                    "* `{}` (kind: {}, line: {})",
+                    c.id, c.kind, c.call_site_line
+                )?;
             }
         }
     } else {
@@ -580,10 +657,16 @@ pub fn run_callees_internal(
     writer: &mut dyn std::io::Write,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if format != "table" && format != "markdown" && format != "json" {
-        return Err(format!("Invalid format '{}'. Supported: table, markdown, json", format).into());
+        return Err(format!(
+            "Invalid format '{}'. Supported: table, markdown, json",
+            format
+        )
+        .into());
     }
 
-    let mut stmt_all = conn.prepare("MATCH (s:Symbol) RETURN s.id, s.name, s.kind, s.start_line, s.end_line, s.signature")?;
+    let mut stmt_all = conn.prepare(
+        "MATCH (s:Symbol) RETURN s.id, s.name, s.kind, s.start_line, s.end_line, s.signature",
+    )?;
     let query_all = conn.execute(&mut stmt_all, vec![])?;
     let mut all_symbols = Vec::new();
     for row in query_all {
@@ -594,7 +677,14 @@ pub fn run_callees_internal(
             Some(Value::Int64(sl)),
             Some(Value::Int64(el)),
             Some(Value::String(sig)),
-        ) = (row.first(), row.get(1), row.get(2), row.get(3), row.get(4), row.get(5)) {
+        ) = (
+            row.first(),
+            row.get(1),
+            row.get(2),
+            row.get(3),
+            row.get(4),
+            row.get(5),
+        ) {
             all_symbols.push(SymbolInfo {
                 id: id.clone(),
                 name: name.clone(),
@@ -625,7 +715,11 @@ pub fn run_callees_internal(
             writeln!(writer, "\nNo callees found.")?;
         } else {
             for c in &callees {
-                writeln!(writer, "* `{}` (kind: {}, line: {})", c.id, c.kind, c.call_site_line)?;
+                writeln!(
+                    writer,
+                    "* `{}` (kind: {}, line: {})",
+                    c.id, c.kind, c.call_site_line
+                )?;
             }
         }
     } else {
@@ -659,7 +753,11 @@ pub fn run_dependencies_internal(
     writer: &mut dyn std::io::Write,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if format != "table" && format != "markdown" && format != "json" {
-        return Err(format!("Invalid format '{}'. Supported: table, markdown, json", format).into());
+        return Err(format!(
+            "Invalid format '{}'. Supported: table, markdown, json",
+            format
+        )
+        .into());
     }
 
     let mut stmt_all = conn.prepare("MATCH (f:File) RETURN f.path, f.language")?;
@@ -708,10 +806,7 @@ pub fn run_dependencies_internal(
             }
         }
     } else {
-        let headers = vec![
-            "File Path".to_string(),
-            "Direction".to_string(),
-        ];
+        let headers = vec!["File Path".to_string(), "Direction".to_string()];
         let mut rows = Vec::new();
         for imp in &imports {
             rows.push(vec![imp.clone(), "Imports".to_string()]);
@@ -773,7 +868,10 @@ pub fn run_repl(db_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     println!("==================================================");
 
     let mut rl = DefaultEditor::new()?;
-    let history_path = db_path.parent().unwrap_or_else(|| Path::new(".")).join(".synapse_history");
+    let history_path = db_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(".synapse_history");
     let _ = rl.load_history(&history_path);
 
     loop {
@@ -881,15 +979,30 @@ pub fn handle_repl_command(
             ".help" => {
                 writeln!(writer, "Synapse REPL Shortcuts:")?;
                 writeln!(writer, "  .help                    Show this help message")?;
-                writeln!(writer, "  .callers <symbol>        Find all callers of a symbol")?;
-                writeln!(writer, "  .callees <symbol>        Find all callees of a symbol")?;
-                writeln!(writer, "  .deps <file>             List dependencies for a file")?;
-                writeln!(writer, "  .context <symbol/file>   Get code context (exact search)")?;
+                writeln!(
+                    writer,
+                    "  .callers <symbol>        Find all callers of a symbol"
+                )?;
+                writeln!(
+                    writer,
+                    "  .callees <symbol>        Find all callees of a symbol"
+                )?;
+                writeln!(
+                    writer,
+                    "  .deps <file>             List dependencies for a file"
+                )?;
+                writeln!(
+                    writer,
+                    "  .context <symbol/file>   Get code context (exact search)"
+                )?;
                 writeln!(writer, "  .exit / .quit            Exit the REPL")?;
             }
             ".callers" => {
                 if parts.len() < 2 {
-                    writeln!(writer, "Error: Missing target symbol. Usage: .callers <symbol>")?;
+                    writeln!(
+                        writer,
+                        "Error: Missing target symbol. Usage: .callers <symbol>"
+                    )?;
                 } else {
                     let symbol = parts[1..].join(" ");
                     if let Err(e) = run_callers_internal(conn, &symbol, true, "table", writer) {
@@ -899,7 +1012,10 @@ pub fn handle_repl_command(
             }
             ".callees" => {
                 if parts.len() < 2 {
-                    writeln!(writer, "Error: Missing target symbol. Usage: .callees <symbol>")?;
+                    writeln!(
+                        writer,
+                        "Error: Missing target symbol. Usage: .callees <symbol>"
+                    )?;
                 } else {
                     let symbol = parts[1..].join(" ");
                     if let Err(e) = run_callees_internal(conn, &symbol, true, "table", writer) {
@@ -919,11 +1035,23 @@ pub fn handle_repl_command(
             }
             ".context" => {
                 if parts.len() < 2 {
-                    writeln!(writer, "Error: Missing target. Usage: .context <symbol/file>")?;
+                    writeln!(
+                        writer,
+                        "Error: Missing target. Usage: .context <symbol/file>"
+                    )?;
                 } else {
                     let target = parts[1..].join(" ");
-                    if let Err(e) = run_context_internal(conn, Some(&target), None, false, "markdown", writer) {
-                        if let Err(e2) = run_context_internal(conn, None, Some(&target), false, "markdown", writer) {
+                    if let Err(e) =
+                        run_context_internal(conn, Some(&target), None, false, "markdown", writer)
+                    {
+                        if let Err(e2) = run_context_internal(
+                            conn,
+                            None,
+                            Some(&target),
+                            false,
+                            "markdown",
+                            writer,
+                        ) {
                             writeln!(writer, "Error running .context (symbol): {}", e)?;
                             writeln!(writer, "Error running .context (file): {}", e2)?;
                         }
@@ -931,7 +1059,11 @@ pub fn handle_repl_command(
                 }
             }
             _ => {
-                writeln!(writer, "Error: Unknown shortcut command '{}'. Type '.help' for commands.", cmd)?;
+                writeln!(
+                    writer,
+                    "Error: Unknown shortcut command '{}'. Type '.help' for commands.",
+                    cmd
+                )?;
             }
         }
     } else {
@@ -972,11 +1104,18 @@ mod tests {
         }
         let db = Database::new(db_path, SystemConfig::default()).unwrap();
         let conn = Connection::new(&db).unwrap();
-        conn.query("CREATE NODE TABLE T(id INT64, name STRING, PRIMARY KEY(id))").unwrap();
-        conn.query("CREATE (:T {id: 101, name: 'Indexer'})").unwrap();
+        conn.query("CREATE NODE TABLE T(id INT64, name STRING, PRIMARY KEY(id))")
+            .unwrap();
+        conn.query("CREATE (:T {id: 101, name: 'Indexer'})")
+            .unwrap();
 
         let mut output_buf = Vec::new();
-        run_query_internal(&conn, "MATCH (n:T) RETURN n.id AS ID, n.name AS NAME", &mut output_buf).unwrap();
+        run_query_internal(
+            &conn,
+            "MATCH (n:T) RETURN n.id AS ID, n.name AS NAME",
+            &mut output_buf,
+        )
+        .unwrap();
         let output = String::from_utf8(output_buf).unwrap();
 
         assert!(output.contains("101"));
@@ -1045,9 +1184,12 @@ mod tests {
         let conn = Connection::new(&db).unwrap();
         conn.query("CREATE NODE TABLE File (path STRING, language STRING, file_size INT64, hash STRING, raw_imports STRING, PRIMARY KEY (path))").unwrap();
         conn.query("CREATE NODE TABLE Symbol (id STRING, name STRING, kind STRING, start_line INT64, start_col INT64, end_line INT64, signature STRING, raw_calls STRING, PRIMARY KEY (id))").unwrap();
-        conn.query("CREATE REL TABLE CONTAINS (FROM File TO Symbol, FROM Symbol TO Symbol)").unwrap();
-        conn.query("CREATE REL TABLE IMPORTS (FROM File TO File)").unwrap();
-        conn.query("CREATE REL TABLE CALLS (FROM Symbol TO Symbol, call_site_line INT64)").unwrap();
+        conn.query("CREATE REL TABLE CONTAINS (FROM File TO Symbol, FROM Symbol TO Symbol)")
+            .unwrap();
+        conn.query("CREATE REL TABLE IMPORTS (FROM File TO File)")
+            .unwrap();
+        conn.query("CREATE REL TABLE CALLS (FROM Symbol TO Symbol, call_site_line INT64)")
+            .unwrap();
         conn.query("CREATE (:File {path: 'src/main.rs', language: 'Rust', file_size: 10, hash: 'x', raw_imports: '[]'})").unwrap();
         conn.query("CREATE (:Symbol {id: 'src/main.rs::main', name: 'main', kind: 'Function', start_line: 1, start_col: 1, end_line: 2, signature: 'fn main()', raw_calls: '[]'})").unwrap();
 
@@ -1071,7 +1213,10 @@ mod tests {
         let mut out_buf = Vec::new();
         let res = run_context_internal(&conn, Some("main"), None, false, "html", &mut out_buf);
         assert!(res.is_err());
-        assert_eq!(res.unwrap_err().to_string(), "Invalid output format 'html'. Supported formats are: markdown, json");
+        assert_eq!(
+            res.unwrap_err().to_string(),
+            "Invalid output format 'html'. Supported formats are: markdown, json"
+        );
         let _ = std::fs::remove_file(db_path);
     }
 
@@ -1087,9 +1232,12 @@ mod tests {
         // DDL
         conn.query("CREATE NODE TABLE File(path STRING, language STRING, file_size INT64, hash STRING, raw_imports STRING, PRIMARY KEY(path))").unwrap();
         conn.query("CREATE NODE TABLE Symbol(id STRING, name STRING, kind STRING, start_line INT64, start_col INT64, end_line INT64, signature STRING, raw_calls STRING, PRIMARY KEY(id))").unwrap();
-        conn.query("CREATE REL TABLE CONTAINS(FROM File TO Symbol, FROM Symbol TO Symbol)").unwrap();
-        conn.query("CREATE REL TABLE IMPORTS(FROM File TO File)").unwrap();
-        conn.query("CREATE REL TABLE CALLS(FROM Symbol TO Symbol, call_site_line INT64)").unwrap();
+        conn.query("CREATE REL TABLE CONTAINS(FROM File TO Symbol, FROM Symbol TO Symbol)")
+            .unwrap();
+        conn.query("CREATE REL TABLE IMPORTS(FROM File TO File)")
+            .unwrap();
+        conn.query("CREATE REL TABLE CALLS(FROM Symbol TO Symbol, call_site_line INT64)")
+            .unwrap();
 
         // Seed Data
         conn.query("CREATE (:File {path: 'src/main.rs', language: 'Rust', file_size: 100, hash: 'h1', raw_imports: '[]'})").unwrap();
@@ -1155,5 +1303,3 @@ mod tests {
         let _ = std::fs::remove_file(db_path);
     }
 }
-
-

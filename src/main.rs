@@ -1,4 +1,5 @@
 pub mod chunker;
+pub mod embed;
 pub mod embedder;
 pub mod file_utils;
 pub mod index;
@@ -6,11 +7,10 @@ pub mod linker;
 pub mod parser;
 pub mod query_cli;
 pub mod schema;
-pub mod embed;
 pub mod similar;
 
-use std::path::PathBuf;
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(name = "synapse")]
@@ -167,7 +167,11 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Index { path, db: db_path, verbose } => {
+        Commands::Index {
+            path,
+            db: db_path,
+            verbose,
+        } => {
             index::run_index(path, db_path, verbose);
         }
         Commands::Query { query, db } => {
@@ -176,25 +180,48 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-        Commands::Context { symbol, file, fuzzy, format, db } => {
-            if let Err(err) = query_cli::handle_context(symbol.as_deref(), file.as_deref(), fuzzy, &format, &db) {
+        Commands::Context {
+            symbol,
+            file,
+            fuzzy,
+            format,
+            db,
+        } => {
+            if let Err(err) =
+                query_cli::handle_context(symbol.as_deref(), file.as_deref(), fuzzy, &format, &db)
+            {
                 eprintln!("Error: {}", err);
                 std::process::exit(1);
             }
         }
-        Commands::Callers { symbol, exact, format, db } => {
+        Commands::Callers {
+            symbol,
+            exact,
+            format,
+            db,
+        } => {
             if let Err(err) = query_cli::handle_callers(&symbol, exact, &format, &db) {
                 eprintln!("Error: {}", err);
                 std::process::exit(1);
             }
         }
-        Commands::Callees { symbol, exact, format, db } => {
+        Commands::Callees {
+            symbol,
+            exact,
+            format,
+            db,
+        } => {
             if let Err(err) = query_cli::handle_callees(&symbol, exact, &format, &db) {
                 eprintln!("Error: {}", err);
                 std::process::exit(1);
             }
         }
-        Commands::Dependencies { file, exact, format, db } => {
+        Commands::Dependencies {
+            file,
+            exact,
+            format,
+            db,
+        } => {
             if let Err(err) = query_cli::handle_dependencies(&file, exact, &format, &db) {
                 eprintln!("Error: {}", err);
                 std::process::exit(1);
@@ -206,13 +233,23 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-        Commands::Embed { db, batch_size, verbose } => {
+        Commands::Embed {
+            db,
+            batch_size,
+            verbose,
+        } => {
             if let Err(err) = embed::handle_embed(&db, batch_size, verbose) {
                 eprintln!("Error: {}", err);
                 std::process::exit(1);
             }
         }
-        Commands::Similar { query, db, limit, threshold, format } => {
+        Commands::Similar {
+            query,
+            db,
+            limit,
+            threshold,
+            format,
+        } => {
             if let Err(err) = similar::handle_similar(&query, &db, limit, threshold, &format) {
                 eprintln!("Error: {}", err);
                 std::process::exit(1);
@@ -239,7 +276,12 @@ mod tests {
         ];
         let parsed = Cli::try_parse_from(args).unwrap();
         match parsed.command {
-            Commands::Callers { symbol, exact, format, db } => {
+            Commands::Callers {
+                symbol,
+                exact,
+                format,
+                db,
+            } => {
                 assert_eq!(symbol, "test_symbol");
                 assert!(exact);
                 assert_eq!(format, "json");
@@ -263,7 +305,12 @@ mod tests {
         ];
         let parsed = Cli::try_parse_from(args).unwrap();
         match parsed.command {
-            Commands::Callees { symbol, exact, format, db } => {
+            Commands::Callees {
+                symbol,
+                exact,
+                format,
+                db,
+            } => {
                 assert_eq!(symbol, "test_symbol");
                 assert!(exact);
                 assert_eq!(format, "markdown");
@@ -287,7 +334,12 @@ mod tests {
         ];
         let parsed = Cli::try_parse_from(args).unwrap();
         match parsed.command {
-            Commands::Dependencies { file, exact, format, db } => {
+            Commands::Dependencies {
+                file,
+                exact,
+                format,
+                db,
+            } => {
                 assert_eq!(file, "test_file.rs");
                 assert!(exact);
                 assert_eq!(format, "table");
@@ -299,18 +351,14 @@ mod tests {
 
     #[test]
     fn test_cli_parsing_embed() {
-        let args = vec![
-            "synapse",
-            "embed",
-            "-d",
-            "test.lbug",
-            "-b",
-            "128",
-            "-v",
-        ];
+        let args = vec!["synapse", "embed", "-d", "test.lbug", "-b", "128", "-v"];
         let parsed = Cli::try_parse_from(args).unwrap();
         match parsed.command {
-            Commands::Embed { db, batch_size, verbose } => {
+            Commands::Embed {
+                db,
+                batch_size,
+                verbose,
+            } => {
                 assert_eq!(db, PathBuf::from("test.lbug"));
                 assert_eq!(batch_size, 128);
                 assert!(verbose);
@@ -336,7 +384,13 @@ mod tests {
         ];
         let parsed = Cli::try_parse_from(args).unwrap();
         match parsed.command {
-            Commands::Similar { query, db, limit, threshold, format } => {
+            Commands::Similar {
+                query,
+                db,
+                limit,
+                threshold,
+                format,
+            } => {
                 assert_eq!(query, "error handling");
                 assert_eq!(db, PathBuf::from("test.lbug"));
                 assert_eq!(limit, 10);
@@ -349,12 +403,7 @@ mod tests {
 
     #[test]
     fn test_cli_parsing_repl() {
-        let args = vec![
-            "synapse",
-            "repl",
-            "-d",
-            "test_db.lbug",
-        ];
+        let args = vec!["synapse", "repl", "-d", "test_db.lbug"];
         let parsed = Cli::try_parse_from(args).unwrap();
         match parsed.command {
             Commands::Repl { db } => {

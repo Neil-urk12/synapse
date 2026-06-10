@@ -509,7 +509,8 @@ impl ASTParser {
                     let name = func_node.utf8_text(ctx.source).unwrap_or("").to_string();
                     if func_node.kind() == "selector_expression" {
                         if let Some(field_node) = func_node.child_by_field_name("field") {
-                            let method_name = field_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                            let method_name =
+                                field_node.utf8_text(ctx.source).unwrap_or("").to_string();
                             let is_valid = !method_name.is_empty()
                                 && method_name.chars().all(|c| c.is_alphanumeric() || c == '_');
                             if is_valid {
@@ -535,12 +536,19 @@ impl ASTParser {
             }
             "function_declaration" | "method_declaration" => {
                 let name = if let Some(name_node) = node.child_by_field_name("name") {
-                    name_node.utf8_text(ctx.source).unwrap_or("anonymous").to_string()
+                    name_node
+                        .utf8_text(ctx.source)
+                        .unwrap_or("anonymous")
+                        .to_string()
                 } else {
                     "anonymous".to_string()
                 };
 
-                let kind_label = if kind == "method_declaration" { "Method" } else { "Function" };
+                let kind_label = if kind == "method_declaration" {
+                    "Method"
+                } else {
+                    "Function"
+                };
                 let mut go_parent = current_parent_id.clone();
                 if kind == "method_declaration" {
                     if let Some(receiver_node) = node.child_by_field_name("receiver") {
@@ -551,7 +559,8 @@ impl ASTParser {
                             if r_child.kind() == "parameter_declaration" {
                                 if let Some(type_node) = r_child.child_by_field_name("type") {
                                     let type_text = type_node.utf8_text(ctx.source).unwrap_or("");
-                                    found_type = Some(type_text.trim_start_matches('*').trim().to_string());
+                                    found_type =
+                                        Some(type_text.trim_start_matches('*').trim().to_string());
                                     break;
                                 }
                             }
@@ -599,7 +608,10 @@ impl ASTParser {
                         let child = cursor.node();
                         if child.kind() == "type_spec" {
                             if let Some(name_node) = child.child_by_field_name("name") {
-                                let name = name_node.utf8_text(ctx.source).unwrap_or("anonymous").to_string();
+                                let name = name_node
+                                    .utf8_text(ctx.source)
+                                    .unwrap_or("anonymous")
+                                    .to_string();
                                 if let Some(type_node) = child.child_by_field_name("type") {
                                     let kind_label = match type_node.kind() {
                                         "struct_type" => "Struct",
@@ -607,7 +619,8 @@ impl ASTParser {
                                         _ => "",
                                     };
                                     if !kind_label.is_empty() {
-                                        let symbol_id = if let Some(ref parent) = current_parent_id {
+                                        let symbol_id = if let Some(ref parent) = current_parent_id
+                                        {
                                             format!("{}::{}", parent, name)
                                         } else {
                                             format!("{}::{}", ctx.file_path, name)
@@ -625,7 +638,10 @@ impl ASTParser {
                                             signature,
                                         });
 
-                                        let from_id = current_parent_id.as_deref().unwrap_or(ctx.file_path).to_string();
+                                        let from_id = current_parent_id
+                                            .as_deref()
+                                            .unwrap_or(ctx.file_path)
+                                            .to_string();
                                         ctx.edges.push(EdgeData {
                                             from_id,
                                             to_id: symbol_id.clone(),
@@ -712,10 +728,12 @@ impl ASTParser {
                                 || child.kind() == "identifier"
                                 || child.kind() == "aliased_import")
                         {
-                            let mut name_text = child.utf8_text(ctx.source).unwrap_or("").to_string();
+                            let mut name_text =
+                                child.utf8_text(ctx.source).unwrap_or("").to_string();
                             if child.kind() == "aliased_import" {
                                 if let Some(name_node) = child.child_by_field_name("name") {
-                                    name_text = name_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                                    name_text =
+                                        name_node.utf8_text(ctx.source).unwrap_or("").to_string();
                                 }
                             }
                             if !name_text.is_empty() && !module_path.is_empty() {
@@ -736,7 +754,10 @@ impl ASTParser {
                     let name = func_node.utf8_text(ctx.source).unwrap_or("").to_string();
                     if func_node.kind() == "attribute" {
                         if let Some(attribute_node) = func_node.child_by_field_name("attribute") {
-                            let method_name = attribute_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                            let method_name = attribute_node
+                                .utf8_text(ctx.source)
+                                .unwrap_or("")
+                                .to_string();
                             let is_valid = !method_name.is_empty()
                                 && method_name.chars().all(|c| c.is_alphanumeric() || c == '_');
                             if is_valid {
@@ -762,7 +783,10 @@ impl ASTParser {
             }
             "class_definition" => {
                 let name = if let Some(name_node) = node.child_by_field_name("name") {
-                    name_node.utf8_text(ctx.source).unwrap_or("anonymous").to_string()
+                    name_node
+                        .utf8_text(ctx.source)
+                        .unwrap_or("anonymous")
+                        .to_string()
                 } else {
                     "anonymous".to_string()
                 };
@@ -785,7 +809,10 @@ impl ASTParser {
                     signature,
                 });
 
-                let from_id = current_parent_id.as_deref().unwrap_or(ctx.file_path).to_string();
+                let from_id = current_parent_id
+                    .as_deref()
+                    .unwrap_or(ctx.file_path)
+                    .to_string();
                 ctx.edges.push(EdgeData {
                     from_id,
                     to_id: symbol_id.clone(),
@@ -796,7 +823,10 @@ impl ASTParser {
             }
             "function_definition" => {
                 let name = if let Some(name_node) = node.child_by_field_name("name") {
-                    name_node.utf8_text(ctx.source).unwrap_or("anonymous").to_string()
+                    name_node
+                        .utf8_text(ctx.source)
+                        .unwrap_or("anonymous")
+                        .to_string()
                 } else {
                     "anonymous".to_string()
                 };
@@ -830,7 +860,10 @@ impl ASTParser {
                     signature,
                 });
 
-                let from_id = current_parent_id.as_deref().unwrap_or(ctx.file_path).to_string();
+                let from_id = current_parent_id
+                    .as_deref()
+                    .unwrap_or(ctx.file_path)
+                    .to_string();
                 ctx.edges.push(EdgeData {
                     from_id,
                     to_id: symbol_id.clone(),
@@ -880,7 +913,8 @@ impl ASTParser {
                     let mut name = func_node.utf8_text(ctx.source).unwrap_or("").to_string();
                     if func_node.kind() == "field_expression" {
                         if let Some(field_node) = func_node.child_by_field_name("field") {
-                            let method_name = field_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                            let method_name =
+                                field_node.utf8_text(ctx.source).unwrap_or("").to_string();
                             let is_valid = !method_name.is_empty()
                                 && method_name.chars().all(|c| c.is_alphanumeric() || c == '_');
                             if is_valid {
@@ -897,7 +931,8 @@ impl ASTParser {
                             loop {
                                 let c_node = inner_cursor.node();
                                 if c_node.kind() == "field" {
-                                    let method_name = c_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                                    let method_name =
+                                        c_node.utf8_text(ctx.source).unwrap_or("").to_string();
                                     ctx.calls.push(RawCall {
                                         name: method_name,
                                         line: start_point.row + 1,
@@ -930,7 +965,10 @@ impl ASTParser {
             }
             "class_specifier" | "struct_specifier" | "namespace_definition" => {
                 let name = if let Some(name_node) = node.child_by_field_name("name") {
-                    name_node.utf8_text(ctx.source).unwrap_or("anonymous").to_string()
+                    name_node
+                        .utf8_text(ctx.source)
+                        .unwrap_or("anonymous")
+                        .to_string()
                 } else {
                     "anonymous".to_string()
                 };
@@ -960,7 +998,10 @@ impl ASTParser {
                     signature,
                 });
 
-                let from_id = current_parent_id.as_deref().unwrap_or(ctx.file_path).to_string();
+                let from_id = current_parent_id
+                    .as_deref()
+                    .unwrap_or(ctx.file_path)
+                    .to_string();
                 ctx.edges.push(EdgeData {
                     from_id,
                     to_id: symbol_id.clone(),
@@ -972,7 +1013,7 @@ impl ASTParser {
             "function_definition" => {
                 let mut name = "anonymous".to_string();
                 let mut go_parent = current_parent_id.clone();
-                
+
                 if let Some(declarator) = node.child_by_field_name("declarator") {
                     let mut cursor = declarator.walk();
                     loop {
@@ -985,12 +1026,16 @@ impl ASTParser {
                                         let class_part = &qual_text[..ns_sep_idx];
                                         let method_part = &qual_text[ns_sep_idx + 2..];
                                         name = method_part.to_string();
-                                        go_parent = Some(format!("{}::{}", ctx.file_path, class_part));
+                                        go_parent =
+                                            Some(format!("{}::{}", ctx.file_path, class_part));
                                     } else {
                                         name = qual_text.to_string();
                                     }
                                 } else {
-                                    name = decl.utf8_text(ctx.source).unwrap_or("anonymous").to_string();
+                                    name = decl
+                                        .utf8_text(ctx.source)
+                                        .unwrap_or("anonymous")
+                                        .to_string();
                                 }
                             }
                             break;
@@ -1084,8 +1129,8 @@ impl ASTParser {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = name_node.utf8_text(ctx.source).unwrap_or("").to_string();
                     let has_receiver = node.child_by_field_name("object").is_some();
-                    let is_valid = !name.is_empty()
-                        && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+                    let is_valid =
+                        !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
                     if is_valid {
                         ctx.calls.push(RawCall {
                             name,
@@ -1097,12 +1142,19 @@ impl ASTParser {
             }
             "class_declaration" | "interface_declaration" => {
                 let name = if let Some(name_node) = node.child_by_field_name("name") {
-                    name_node.utf8_text(ctx.source).unwrap_or("anonymous").to_string()
+                    name_node
+                        .utf8_text(ctx.source)
+                        .unwrap_or("anonymous")
+                        .to_string()
                 } else {
                     "anonymous".to_string()
                 };
 
-                let kind_label = if kind == "class_declaration" { "Class" } else { "Interface" };
+                let kind_label = if kind == "class_declaration" {
+                    "Class"
+                } else {
+                    "Interface"
+                };
 
                 let symbol_id = if let Some(ref parent) = current_parent_id {
                     format!("{}::{}", parent, name)
@@ -1122,7 +1174,10 @@ impl ASTParser {
                     signature,
                 });
 
-                let from_id = current_parent_id.as_deref().unwrap_or(ctx.file_path).to_string();
+                let from_id = current_parent_id
+                    .as_deref()
+                    .unwrap_or(ctx.file_path)
+                    .to_string();
                 ctx.edges.push(EdgeData {
                     from_id,
                     to_id: symbol_id.clone(),
@@ -1133,12 +1188,19 @@ impl ASTParser {
             }
             "method_declaration" | "constructor_declaration" => {
                 let name = if let Some(name_node) = node.child_by_field_name("name") {
-                    name_node.utf8_text(ctx.source).unwrap_or("anonymous").to_string()
+                    name_node
+                        .utf8_text(ctx.source)
+                        .unwrap_or("anonymous")
+                        .to_string()
                 } else {
                     "anonymous".to_string()
                 };
 
-                let kind_label = if kind == "constructor_declaration" { "Constructor" } else { "Method" };
+                let kind_label = if kind == "constructor_declaration" {
+                    "Constructor"
+                } else {
+                    "Method"
+                };
 
                 let symbol_id = if let Some(ref parent) = current_parent_id {
                     format!("{}::{}", parent, name)
@@ -1158,7 +1220,10 @@ impl ASTParser {
                     signature,
                 });
 
-                let from_id = current_parent_id.as_deref().unwrap_or(ctx.file_path).to_string();
+                let from_id = current_parent_id
+                    .as_deref()
+                    .unwrap_or(ctx.file_path)
+                    .to_string();
                 ctx.edges.push(EdgeData {
                     from_id,
                     to_id: symbol_id.clone(),
@@ -1212,7 +1277,7 @@ impl ASTParser {
             "call_expression" => {
                 let mut name = String::new();
                 let mut has_receiver = false;
-                
+
                 let mut cursor = node.walk();
                 if cursor.goto_first_child() {
                     let first_child = cursor.node();
@@ -1228,7 +1293,10 @@ impl ASTParser {
                                         loop {
                                             let target = suffix_cursor.node();
                                             if target.kind() == "simple_identifier" {
-                                                name = target.utf8_text(ctx.source).unwrap_or("").to_string();
+                                                name = target
+                                                    .utf8_text(ctx.source)
+                                                    .unwrap_or("")
+                                                    .to_string();
                                                 break;
                                             }
                                             if !suffix_cursor.goto_next_sibling() {
@@ -1247,9 +1315,9 @@ impl ASTParser {
                         name = first_child.utf8_text(ctx.source).unwrap_or("").to_string();
                     }
                 }
-                
-                let is_valid = !name.is_empty()
-                    && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+
+                let is_valid =
+                    !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
                 if is_valid {
                     ctx.calls.push(RawCall {
                         name,
@@ -1264,8 +1332,12 @@ impl ASTParser {
                 if cursor.goto_first_child() {
                     loop {
                         let child = cursor.node();
-                        if child.kind() == "simple_identifier" || child.kind() == "type_identifier" {
-                            name = child.utf8_text(ctx.source).unwrap_or("anonymous").to_string();
+                        if child.kind() == "simple_identifier" || child.kind() == "type_identifier"
+                        {
+                            name = child
+                                .utf8_text(ctx.source)
+                                .unwrap_or("anonymous")
+                                .to_string();
                             break;
                         }
                         if !cursor.goto_next_sibling() {
@@ -1299,7 +1371,10 @@ impl ASTParser {
                     signature,
                 });
 
-                let from_id = current_parent_id.as_deref().unwrap_or(ctx.file_path).to_string();
+                let from_id = current_parent_id
+                    .as_deref()
+                    .unwrap_or(ctx.file_path)
+                    .to_string();
                 ctx.edges.push(EdgeData {
                     from_id,
                     to_id: symbol_id.clone(),
@@ -1315,7 +1390,10 @@ impl ASTParser {
                     loop {
                         let child = cursor.node();
                         if child.kind() == "simple_identifier" {
-                            name = child.utf8_text(ctx.source).unwrap_or("anonymous").to_string();
+                            name = child
+                                .utf8_text(ctx.source)
+                                .unwrap_or("anonymous")
+                                .to_string();
                             break;
                         }
                         if !cursor.goto_next_sibling() {
@@ -1352,7 +1430,10 @@ impl ASTParser {
                     signature,
                 });
 
-                let from_id = current_parent_id.as_deref().unwrap_or(ctx.file_path).to_string();
+                let from_id = current_parent_id
+                    .as_deref()
+                    .unwrap_or(ctx.file_path)
+                    .to_string();
                 ctx.edges.push(EdgeData {
                     from_id,
                     to_id: symbol_id.clone(),
@@ -1744,16 +1825,27 @@ mod tests {
             }
         "#;
         let path = Path::new("test.go");
-        let FileAnalysis { nodes, edges: _, imports, calls } = ASTParser::parse_file(path, code);
+        let FileAnalysis {
+            nodes,
+            edges: _,
+            imports,
+            calls,
+        } = ASTParser::parse_file(path, code);
 
         assert!(!nodes.is_empty(), "Go nodes should not be empty");
         assert!(imports.iter().any(|i| i.path == "fmt"));
         assert!(imports.iter().any(|i| i.path == "math"));
 
-        let process_node = nodes.iter().find(|n| n.name == "Process").expect("Process method not found");
+        let process_node = nodes
+            .iter()
+            .find(|n| n.name == "Process")
+            .expect("Process method not found");
         assert_eq!(process_node.kind, "Method");
 
-        let struct_node = nodes.iter().find(|n| n.name == "MyStruct").expect("MyStruct struct not found");
+        let struct_node = nodes
+            .iter()
+            .find(|n| n.name == "MyStruct")
+            .expect("MyStruct struct not found");
         assert_eq!(struct_node.kind, "Struct");
 
         assert!(calls.iter().any(|c| c.name == "Process" && c.is_method));
@@ -1774,19 +1866,33 @@ def run():
     h.greet()
         "#;
         let path = Path::new("test.py");
-        let FileAnalysis { nodes, edges: _, imports, calls } = ASTParser::parse_file(path, code);
+        let FileAnalysis {
+            nodes,
+            edges: _,
+            imports,
+            calls,
+        } = ASTParser::parse_file(path, code);
 
         assert!(!nodes.is_empty(), "Python nodes should not be empty");
         assert!(imports.iter().any(|i| i.path == "os"));
         assert!(imports.iter().any(|i| i.path == "datetime"));
 
-        let class_node = nodes.iter().find(|n| n.name == "Helper").expect("Helper class not found");
+        let class_node = nodes
+            .iter()
+            .find(|n| n.name == "Helper")
+            .expect("Helper class not found");
         assert_eq!(class_node.kind, "Class");
 
-        let greet_node = nodes.iter().find(|n| n.name == "greet").expect("greet method not found");
+        let greet_node = nodes
+            .iter()
+            .find(|n| n.name == "greet")
+            .expect("greet method not found");
         assert_eq!(greet_node.kind, "Method");
 
-        let run_node = nodes.iter().find(|n| n.name == "run").expect("run function not found");
+        let run_node = nodes
+            .iter()
+            .find(|n| n.name == "run")
+            .expect("run function not found");
         assert_eq!(run_node.kind, "Function");
 
         assert!(calls.iter().any(|c| c.name == "greet" && c.is_method));
@@ -1809,18 +1915,32 @@ def run():
             }
         "#;
         let path = Path::new("test.cpp");
-        let FileAnalysis { nodes, edges: _, imports, calls } = ASTParser::parse_file(path, code);
+        let FileAnalysis {
+            nodes,
+            edges: _,
+            imports,
+            calls,
+        } = ASTParser::parse_file(path, code);
 
         assert!(!nodes.is_empty(), "C++ nodes should not be empty");
         assert!(imports.iter().any(|i| i.path == "helper.h"));
 
-        let ns_node = nodes.iter().find(|n| n.name == "ns").expect("Namespace ns not found");
+        let ns_node = nodes
+            .iter()
+            .find(|n| n.name == "ns")
+            .expect("Namespace ns not found");
         assert_eq!(ns_node.kind, "Namespace");
 
-        let runner_node = nodes.iter().find(|n| n.name == "Runner").expect("Runner class not found");
+        let runner_node = nodes
+            .iter()
+            .find(|n| n.name == "Runner")
+            .expect("Runner class not found");
         assert_eq!(runner_node.kind, "Class");
 
-        let run_node = nodes.iter().find(|n| n.name == "run").expect("run method not found");
+        let run_node = nodes
+            .iter()
+            .find(|n| n.name == "run")
+            .expect("run method not found");
         assert_eq!(run_node.kind, "Method");
 
         assert!(calls.iter().any(|c| c.name == "run" && c.is_method));
@@ -1838,15 +1958,26 @@ def run():
             }
         "#;
         let path = Path::new("test.java");
-        let FileAnalysis { nodes, edges: _, imports, calls } = ASTParser::parse_file(path, code);
+        let FileAnalysis {
+            nodes,
+            edges: _,
+            imports,
+            calls,
+        } = ASTParser::parse_file(path, code);
 
         assert!(!nodes.is_empty(), "Java nodes should not be empty");
         assert!(imports.iter().any(|i| i.path == "java.util.List"));
 
-        let class_node = nodes.iter().find(|n| n.name == "Application").expect("Application class not found");
+        let class_node = nodes
+            .iter()
+            .find(|n| n.name == "Application")
+            .expect("Application class not found");
         assert_eq!(class_node.kind, "Class");
 
-        let method_node = nodes.iter().find(|n| n.name == "start").expect("start method not found");
+        let method_node = nodes
+            .iter()
+            .find(|n| n.name == "start")
+            .expect("start method not found");
         assert_eq!(method_node.kind, "Method");
 
         assert!(calls.iter().any(|c| c.name == "println" && c.is_method));
@@ -1864,15 +1995,26 @@ def run():
             }
         "#;
         let path = Path::new("test.kt");
-        let FileAnalysis { nodes, edges: _, imports, calls } = ASTParser::parse_file(path, code);
+        let FileAnalysis {
+            nodes,
+            edges: _,
+            imports,
+            calls,
+        } = ASTParser::parse_file(path, code);
 
         assert!(!nodes.is_empty(), "Kotlin nodes should not be empty");
         assert!(imports.iter().any(|i| i.path == "foo.bar.Baz"));
 
-        let class_node = nodes.iter().find(|n| n.name == "Service").expect("Service class not found");
+        let class_node = nodes
+            .iter()
+            .find(|n| n.name == "Service")
+            .expect("Service class not found");
         assert_eq!(class_node.kind, "Class");
 
-        let method_node = nodes.iter().find(|n| n.name == "execute").expect("execute method not found");
+        let method_node = nodes
+            .iter()
+            .find(|n| n.name == "execute")
+            .expect("execute method not found");
         assert_eq!(method_node.kind, "Method");
 
         assert!(calls.iter().any(|c| c.name == "doSomething" && c.is_method));

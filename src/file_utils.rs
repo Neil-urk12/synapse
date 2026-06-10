@@ -1,7 +1,7 @@
+use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
-use sha2::{Digest, Sha256};
 
 /// SHA-256 hash for incremental indexing detection.
 pub fn compute_sha256(path: &Path) -> io::Result<String> {

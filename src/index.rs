@@ -1,8 +1,8 @@
+use ignore::WalkBuilder;
+use lbug::{Connection, Database, SystemConfig, Value};
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;
-use ignore::WalkBuilder;
-use lbug::{Connection, Database, SystemConfig, Value};
 
 use crate::file_utils;
 use crate::schema;
@@ -24,7 +24,9 @@ pub struct PreparedStatements<'a> {
     pub containment_symbol: &'a mut lbug::PreparedStatement,
 }
 
-pub fn load_all_hashes(conn: &Connection) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
+pub fn load_all_hashes(
+    conn: &Connection,
+) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
     let mut cache = HashMap::new();
     let mut stmt = conn.prepare("MATCH (f:File) RETURN f.path, f.hash")?;
     let result = conn.execute(&mut stmt, vec![])?;
@@ -44,7 +46,10 @@ pub fn write_payload_to_db(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let raw_imports_str = if let Some(ref analysis) = payload.analysis {
         serde_json::to_string(&analysis.imports).unwrap_or_else(|err| {
-            eprintln!("Warning: Failed to serialize imports for '{}': {}", payload.relative_path, err);
+            eprintln!(
+                "Warning: Failed to serialize imports for '{}': {}",
+                payload.relative_path, err
+            );
             "[]".to_string()
         })
     } else {
@@ -60,7 +65,8 @@ pub fn write_payload_to_db(
     ];
     conn.execute(stmts.file_upsert, file_params)?;
 
-    let cleanup_params: Vec<(&str, Value)> = vec![("path", Value::String(payload.relative_path.clone()))];
+    let cleanup_params: Vec<(&str, Value)> =
+        vec![("path", Value::String(payload.relative_path.clone()))];
     conn.execute(stmts.delete_symbols, cleanup_params)?;
 
     if let (Some(analysis), Some(content)) = (payload.analysis, payload.content) {
@@ -74,7 +80,10 @@ pub fn write_payload_to_db(
                 .collect();
             match serde_json::to_string(&symbol_calls) {
                 Ok(serialized) => raw_calls_str = serialized,
-                Err(err) => eprintln!("Warning: Failed to serialize calls for '{}::{}': {}", payload.relative_path, node.name, err),
+                Err(err) => eprintln!(
+                    "Warning: Failed to serialize calls for '{}::{}': {}",
+                    payload.relative_path, node.name, err
+                ),
             }
 
             let node_params: Vec<(&str, Value)> = vec![
@@ -102,7 +111,8 @@ pub fn write_payload_to_db(
             };
         }
 
-        let chunks = crate::chunker::chunk_source(&payload.relative_path, &content, &analysis.nodes);
+        let chunks =
+            crate::chunker::chunk_source(&payload.relative_path, &content, &analysis.nodes);
         crate::chunker::insert_chunks(conn, &payload.relative_path, &payload.language, &chunks)?;
     }
 
@@ -143,7 +153,8 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
         Err(err) => {
             eprintln!(
                 "Error: Failed to connect to LadybugDB at '{}': {}",
-                db_path.display(), err
+                db_path.display(),
+                err
             );
             std::process::exit(1);
         }
@@ -163,15 +174,27 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
         std::process::exit(1);
     }
 
-    if conn.query("MATCH (f:File) RETURN f.raw_imports LIMIT 1").is_err() {
+    if conn
+        .query("MATCH (f:File) RETURN f.raw_imports LIMIT 1")
+        .is_err()
+    {
         eprintln!("\n❌ Database Compatibility Error!");
-        eprintln!("The database at '{}' is incompatible (missing 'raw_imports' column on 'File').", db_path.display());
+        eprintln!(
+            "The database at '{}' is incompatible (missing 'raw_imports' column on 'File').",
+            db_path.display()
+        );
         eprintln!("Please delete the database file and run the indexer again to recreate it.");
         std::process::exit(1);
     }
-    if conn.query("MATCH (s:Symbol) RETURN s.raw_calls LIMIT 1").is_err() {
+    if conn
+        .query("MATCH (s:Symbol) RETURN s.raw_calls LIMIT 1")
+        .is_err()
+    {
         eprintln!("\n❌ Database Compatibility Error!");
-        eprintln!("The database at '{}' is incompatible (missing 'raw_calls' column on 'Symbol').", db_path.display());
+        eprintln!(
+            "The database at '{}' is incompatible (missing 'raw_calls' column on 'Symbol').",
+            db_path.display()
+        );
         eprintln!("Please delete the database file and run the indexer again to recreate it.");
         std::process::exit(1);
     }
@@ -179,7 +202,10 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
     let hash_cache = match load_all_hashes(&conn) {
         Ok(cache) => cache,
         Err(err) => {
-            eprintln!("Warning: Failed to load hash cache (will re-index all files): {}", err);
+            eprintln!(
+                "Warning: Failed to load hash cache (will re-index all files): {}",
+                err
+            );
             HashMap::new()
         }
     };
@@ -191,7 +217,11 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
         let db = match Database::new(&db_path_clone, SystemConfig::default()) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("Error: DB writer failed to open database '{}': {}", db_path_clone.display(), e);
+                eprintln!(
+                    "Error: DB writer failed to open database '{}': {}",
+                    db_path_clone.display(),
+                    e
+                );
                 return (0u64, 0u64);
             }
         };
@@ -208,9 +238,9 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
              ON CREATE SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports \
              ON MATCH SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports"
         ).expect("Bug: file_upsert prepare failed (hardcoded SQL)");
-        let mut prepared_delete_symbols = conn.prepare(
-            "MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol) DETACH DELETE s"
-        ).expect("Bug: delete_symbols prepare failed (hardcoded SQL)");
+        let mut prepared_delete_symbols = conn
+            .prepare("MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol) DETACH DELETE s")
+            .expect("Bug: delete_symbols prepare failed (hardcoded SQL)");
         let mut prepared_symbol_create = conn.prepare(
             "MERGE (s:Symbol {id: $id}) \
              ON CREATE SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls \
@@ -243,7 +273,10 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
                     local_byte_count += size;
                 }
                 Err(err) => {
-                    eprintln!("Error: Failed to index file '{}' in database: {}", path, err);
+                    eprintln!(
+                        "Error: Failed to index file '{}' in database: {}",
+                        path, err
+                    );
                 }
             }
         }
@@ -251,7 +284,9 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
     });
 
     let walker = WalkBuilder::new(&path).build_parallel();
-    let abs_db_path = db_path.canonicalize().unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(&db_path));
+    let abs_db_path = db_path
+        .canonicalize()
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(&db_path));
     let path_clone = path.clone();
 
     let skip_count_atomic = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -275,13 +310,22 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
             };
             let file_path = entry.path();
             if file_path.is_file() {
-                let abs_file = file_path.canonicalize().unwrap_or_else(|_| file_path.to_path_buf());
+                let abs_file = file_path
+                    .canonicalize()
+                    .unwrap_or_else(|_| file_path.to_path_buf());
                 let abs_db_str = abs_db_path.to_string_lossy();
-                if abs_file == *abs_db_path || abs_file.to_string_lossy().starts_with(format!("{}.", abs_db_str).as_str()) {
+                if abs_file == *abs_db_path
+                    || abs_file
+                        .to_string_lossy()
+                        .starts_with(format!("{}.", abs_db_str).as_str())
+                {
                     return ignore::WalkState::Continue;
                 }
 
-                let relative_path = file_path.strip_prefix(path_clone).unwrap_or(file_path).to_path_buf();
+                let relative_path = file_path
+                    .strip_prefix(path_clone)
+                    .unwrap_or(file_path)
+                    .to_path_buf();
                 let relative_path_str = relative_path.to_string_lossy().to_string();
 
                 if let Ok(metadata) = entry.metadata() {
@@ -295,8 +339,13 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
                             }
                         }
 
-                        let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                        let is_supported = matches!(ext.as_str(), "rs" | "js" | "jsx" | "ts" | "tsx");
+                        let ext = file_path
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("")
+                            .to_lowercase();
+                        let is_supported =
+                            matches!(ext.as_str(), "rs" | "js" | "jsx" | "ts" | "tsx");
 
                         let mut analysis_opt = None;
                         let mut content_opt = None;
@@ -305,7 +354,10 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
                             if let Ok(mut file_handle) = std::fs::File::open(file_path) {
                                 let mut content = String::new();
                                 if file_handle.read_to_string(&mut content).is_ok() {
-                                    let analysis = crate::parser::ASTParser::parse_file(&relative_path, &content);
+                                    let analysis = crate::parser::ASTParser::parse_file(
+                                        &relative_path,
+                                        &content,
+                                    );
                                     analysis_opt = Some(analysis);
                                     content_opt = Some(content);
                                 }
@@ -358,7 +410,10 @@ mod tests {
     use lbug::{Connection, Database};
     use std::path::Path;
 
-    fn with_write_payload_db(test_name: &str, f: impl FnOnce(&Connection, &mut PreparedStatements)) {
+    fn with_write_payload_db(
+        test_name: &str,
+        f: impl FnOnce(&Connection, &mut PreparedStatements),
+    ) {
         let name = format!("test_{}.lbug", test_name);
         let db_path = Path::new(&name);
         if db_path.exists() {
@@ -373,9 +428,9 @@ mod tests {
              ON CREATE SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports \
              ON MATCH SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports"
         ).unwrap();
-        let mut delete_symbols = conn.prepare(
-            "MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol) DETACH DELETE s"
-        ).unwrap();
+        let mut delete_symbols = conn
+            .prepare("MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol) DETACH DELETE s")
+            .unwrap();
         let mut symbol_create = conn.prepare(
             "MERGE (s:Symbol {id: $id}) \
              ON CREATE SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls \
@@ -433,7 +488,10 @@ mod tests {
         let conn = Connection::new(&db).unwrap();
         // No schema init — File table doesn't exist
         let result = load_all_hashes(&conn);
-        assert!(result.is_err(), "Expected error when File table missing, got Ok");
+        assert!(
+            result.is_err(),
+            "Expected error when File table missing, got Ok"
+        );
         drop(conn);
         drop(db);
         if db_path.exists() {
@@ -455,10 +513,15 @@ mod tests {
             let res = write_payload_to_db(conn, payload, stmts, false);
             assert!(res.is_ok());
             {
-                let mut stmt = conn.prepare("MATCH (f:File {path: 'src/dummy.rs'}) RETURN f.hash").unwrap();
+                let mut stmt = conn
+                    .prepare("MATCH (f:File {path: 'src/dummy.rs'}) RETURN f.hash")
+                    .unwrap();
                 let mut result = conn.execute(&mut stmt, vec![]).unwrap();
                 let row = result.next().unwrap();
-                assert_eq!(row.first().unwrap(), &Value::String("dummyhash".to_string()));
+                assert_eq!(
+                    row.first().unwrap(),
+                    &Value::String("dummyhash".to_string())
+                );
             }
         });
     }
@@ -477,7 +540,9 @@ mod tests {
             let res = write_payload_to_db(conn, payload, stmts, false);
             assert!(res.is_ok());
             {
-                let mut stmt = conn.prepare("MATCH (f:File {path: 'src/no_analysis.rs'}) RETURN f.raw_imports").unwrap();
+                let mut stmt = conn
+                    .prepare("MATCH (f:File {path: 'src/no_analysis.rs'}) RETURN f.raw_imports")
+                    .unwrap();
                 let mut result = conn.execute(&mut stmt, vec![]).unwrap();
                 let row = result.next().unwrap();
                 assert_eq!(row.first().unwrap(), &Value::String("[]".to_string()));

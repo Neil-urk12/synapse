@@ -1,4 +1,4 @@
-use fastembed::{TextEmbedding, EmbeddingModel};
+use fastembed::{EmbeddingModel, TextEmbedding};
 
 pub struct Embedder {
     model: TextEmbedding,
@@ -6,9 +6,8 @@ pub struct Embedder {
 
 impl Embedder {
     pub fn try_new() -> Result<Self, Box<dyn std::error::Error>> {
-        let model = TextEmbedding::try_new(
-            fastembed::InitOptions::new(EmbeddingModel::BGESmallENV15),
-        )?;
+        let model =
+            TextEmbedding::try_new(fastembed::InitOptions::new(EmbeddingModel::BGESmallENV15))?;
         Ok(Self { model })
     }
 

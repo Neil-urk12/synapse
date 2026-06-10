@@ -1,6 +1,6 @@
-use std::path::Path;
-use lbug::{Connection, Database, SystemConfig, Value};
 use crate::embedder;
+use lbug::{Connection, Database, SystemConfig, Value};
+use std::path::Path;
 
 pub fn handle_similar(
     query: &str,
@@ -16,7 +16,11 @@ pub fn handle_similar(
     let query_emb = model.embed(&[query.to_string()])?;
     let query_vec = &query_emb[0];
 
-    let vec_str = query_vec.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(", ");
+    let vec_str = query_vec
+        .iter()
+        .map(|f| f.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
     let search_query = format!(
         "CALL QUERY_VECTOR_INDEX('Chunk', 'idx_chunk_vector', [{}], {}) YIELD node, distance RETURN node.id, node.text, node.language, distance",
         vec_str, limit
@@ -53,12 +57,19 @@ pub fn handle_similar(
         };
         let similarity = 1.0 - distance;
         if similarity >= threshold {
-            scored.push(ScoredChunk { id, text, language, score: similarity });
+            scored.push(ScoredChunk {
+                id,
+                text,
+                language,
+                score: similarity,
+            });
         }
     }
 
     if scored.is_empty() {
-        println!("No similar chunks found. Try lowering --threshold or running `synapse embed` first.");
+        println!(
+            "No similar chunks found. Try lowering --threshold or running `synapse embed` first."
+        );
         return Ok(());
     }
 

@@ -1,7 +1,6 @@
 use crate::parser::NodeData;
 use lbug::{Connection, Value};
 
-
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CodeChunk {
     pub id: String,
@@ -74,7 +73,6 @@ pub fn chunk_source_with_options(
     chunks
 }
 
-
 pub fn insert_chunks(
     conn: &Connection,
     file_path: &str,
@@ -82,31 +80,36 @@ pub fn insert_chunks(
     chunks: &[CodeChunk],
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Cleanup old chunks
-    let mut prepared_delete_file_chunks = conn.prepare(
-        "MATCH (f:File {path: $path})-[:DOCUMENTED_BY]->(c:Chunk) DETACH DELETE c"
+    let mut prepared_delete_file_chunks =
+        conn.prepare("MATCH (f:File {path: $path})-[:DOCUMENTED_BY]->(c:Chunk) DETACH DELETE c")?;
+    conn.execute(
+        &mut prepared_delete_file_chunks,
+        vec![("path", Value::String(file_path.to_string()))],
     )?;
-    conn.execute(&mut prepared_delete_file_chunks, vec![("path", Value::String(file_path.to_string()))])?;
 
     let mut prepared_delete_symbol_chunks = conn.prepare(
         "MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol)-[:DOCUMENTED_BY]->(c:Chunk) DETACH DELETE c"
     )?;
-    conn.execute(&mut prepared_delete_symbol_chunks, vec![("path", Value::String(file_path.to_string()))])?;
+    conn.execute(
+        &mut prepared_delete_symbol_chunks,
+        vec![("path", Value::String(file_path.to_string()))],
+    )?;
 
     // 2. Insert new chunks
     let mut prepared_chunk = conn.prepare(
         "MERGE (c:Chunk {id: $id}) \
          ON CREATE SET c.text = $text, c.language = $language, c.embedding = $embedding \
-         ON MATCH SET c.text = $text, c.language = $language, c.embedding = $embedding"
+         ON MATCH SET c.text = $text, c.language = $language, c.embedding = $embedding",
     )?;
 
     let mut prepared_symbol_rel = conn.prepare(
         "MATCH (s:Symbol {id: $from_id}), (c:Chunk {id: $to_id}) \
-         CREATE (s)-[:DOCUMENTED_BY]->(c)"
+         CREATE (s)-[:DOCUMENTED_BY]->(c)",
     )?;
 
     let mut prepared_file_rel = conn.prepare(
         "MATCH (f:File {path: $from_id}), (c:Chunk {id: $to_id}) \
-         CREATE (f)-[:DOCUMENTED_BY]->(c)"
+         CREATE (f)-[:DOCUMENTED_BY]->(c)",
     )?;
 
     let zero_embedding = Value::List(lbug::LogicalType::Float, vec![Value::Float(0.0); 384]);
@@ -158,9 +161,10 @@ mod tests {
         conn.query("CREATE NODE TABLE File (path STRING, language STRING, file_size INT64, hash STRING, raw_imports STRING, PRIMARY KEY (path))").unwrap();
         conn.query("CREATE NODE TABLE Symbol (id STRING, name STRING, kind STRING, start_line INT64, start_col INT64, end_line INT64, signature STRING, raw_calls STRING, PRIMARY KEY (id))").unwrap();
         conn.query("CREATE NODE TABLE Chunk (id STRING, text STRING, language STRING, embedding FLOAT[384], PRIMARY KEY (id))").unwrap();
-        conn.query("CREATE REL TABLE DOCUMENTED_BY (FROM File TO Chunk, FROM Symbol TO Chunk)").unwrap();
-        conn.query("CREATE REL TABLE CONTAINS (FROM File TO Symbol, FROM Symbol TO Symbol)").unwrap();
-
+        conn.query("CREATE REL TABLE DOCUMENTED_BY (FROM File TO Chunk, FROM Symbol TO Chunk)")
+            .unwrap();
+        conn.query("CREATE REL TABLE CONTAINS (FROM File TO Symbol, FROM Symbol TO Symbol)")
+            .unwrap();
 
         // 1. Insert file and symbol
         let mut file_stmt = conn.prepare("CREATE (f:File {path: 'src/main.rs', language: 'Rust', file_size: 100, hash: 'abc', raw_imports: '[]'})").unwrap();
@@ -189,34 +193,49 @@ mod tests {
         let chunk_query = conn.query("MATCH (c:Chunk) RETURN c.id, c.text").unwrap();
         let mut chunks_found = Vec::new();
         for row in chunk_query {
-            if let (Some(Value::String(id)), Some(Value::String(text))) = (row.first(), row.get(1)) {
+            if let (Some(Value::String(id)), Some(Value::String(text))) = (row.first(), row.get(1))
+            {
                 chunks_found.push((id.clone(), text.clone()));
             }
         }
         assert_eq!(chunks_found.len(), 2);
 
         // 4. Verify DOCUMENTED_BY edges exist
-        let rel_query = conn.query("MATCH (s:Symbol)-[:DOCUMENTED_BY]->(c:Chunk) RETURN s.id, c.id").unwrap();
+        let rel_query = conn
+            .query("MATCH (s:Symbol)-[:DOCUMENTED_BY]->(c:Chunk) RETURN s.id, c.id")
+            .unwrap();
         let mut symbol_rel_found = false;
         for row in rel_query {
-            if let (Some(Value::String(s_id)), Some(Value::String(c_id))) = (row.first(), row.get(1)) {
+            if let (Some(Value::String(s_id)), Some(Value::String(c_id))) =
+                (row.first(), row.get(1))
+            {
                 if s_id == "src/main.rs::main" && c_id == "src/main.rs::chunk::0" {
                     symbol_rel_found = true;
                 }
             }
         }
-        assert!(symbol_rel_found, "DOCUMENTED_BY relationship between Symbol and Chunk was not created");
+        assert!(
+            symbol_rel_found,
+            "DOCUMENTED_BY relationship between Symbol and Chunk was not created"
+        );
 
-        let file_rel_query = conn.query("MATCH (f:File)-[:DOCUMENTED_BY]->(c:Chunk) RETURN f.path, c.id").unwrap();
+        let file_rel_query = conn
+            .query("MATCH (f:File)-[:DOCUMENTED_BY]->(c:Chunk) RETURN f.path, c.id")
+            .unwrap();
         let mut file_rel_found = false;
         for row in file_rel_query {
-            if let (Some(Value::String(f_path)), Some(Value::String(c_id))) = (row.first(), row.get(1)) {
+            if let (Some(Value::String(f_path)), Some(Value::String(c_id))) =
+                (row.first(), row.get(1))
+            {
                 if f_path == "src/main.rs" && c_id == "src/main.rs::chunk::1" {
                     file_rel_found = true;
                 }
             }
         }
-        assert!(file_rel_found, "DOCUMENTED_BY relationship between File and Chunk was not created");
+        assert!(
+            file_rel_found,
+            "DOCUMENTED_BY relationship between File and Chunk was not created"
+        );
 
         let _ = std::fs::remove_file(db_path);
     }

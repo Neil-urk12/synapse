@@ -38,7 +38,6 @@ pub struct EdgeData {
     pub from_id: String,
     pub to_id: String,
     pub edge_type: String, // "CONTAINS"
-    pub line: usize,
 }
 
 struct TraverseContext<'a> {
@@ -433,7 +432,6 @@ impl ASTParser {
                     from_id,
                     to_id: symbol_id.clone(),
                     edge_type: "CONTAINS".to_string(),
-                    line: start_point.row + 1,
                 });
 
                 active_parent = Some(symbol_id);
@@ -590,7 +588,6 @@ impl ASTParser {
                     from_id,
                     to_id: symbol_id.clone(),
                     edge_type: "CONTAINS".to_string(),
-                    line: start_point.row + 1,
                 });
 
                 active_parent = Some(symbol_id);
@@ -633,7 +630,6 @@ impl ASTParser {
                                             from_id,
                                             to_id: symbol_id.clone(),
                                             edge_type: "CONTAINS".to_string(),
-                                            line: start_point.row + 1,
                                         });
 
                                         active_parent = Some(symbol_id);
@@ -794,7 +790,6 @@ impl ASTParser {
                     from_id,
                     to_id: symbol_id.clone(),
                     edge_type: "CONTAINS".to_string(),
-                    line: start_point.row + 1,
                 });
 
                 active_parent = Some(symbol_id);
@@ -840,7 +835,6 @@ impl ASTParser {
                     from_id,
                     to_id: symbol_id.clone(),
                     edge_type: "CONTAINS".to_string(),
-                    line: start_point.row + 1,
                 });
 
                 active_parent = Some(symbol_id);
@@ -971,7 +965,6 @@ impl ASTParser {
                     from_id,
                     to_id: symbol_id.clone(),
                     edge_type: "CONTAINS".to_string(),
-                    line: start_point.row + 1,
                 });
 
                 active_parent = Some(symbol_id);
@@ -1041,7 +1034,6 @@ impl ASTParser {
                     from_id,
                     to_id: symbol_id.clone(),
                     edge_type: "CONTAINS".to_string(),
-                    line: start_point.row + 1,
                 });
 
                 active_parent = Some(symbol_id);
@@ -1135,7 +1127,6 @@ impl ASTParser {
                     from_id,
                     to_id: symbol_id.clone(),
                     edge_type: "CONTAINS".to_string(),
-                    line: start_point.row + 1,
                 });
 
                 active_parent = Some(symbol_id);
@@ -1172,7 +1163,6 @@ impl ASTParser {
                     from_id,
                     to_id: symbol_id.clone(),
                     edge_type: "CONTAINS".to_string(),
-                    line: start_point.row + 1,
                 });
 
                 active_parent = Some(symbol_id);
@@ -1314,7 +1304,6 @@ impl ASTParser {
                     from_id,
                     to_id: symbol_id.clone(),
                     edge_type: "CONTAINS".to_string(),
-                    line: start_point.row + 1,
                 });
 
                 active_parent = Some(symbol_id);
@@ -1368,7 +1357,6 @@ impl ASTParser {
                     from_id,
                     to_id: symbol_id.clone(),
                     edge_type: "CONTAINS".to_string(),
-                    line: start_point.row + 1,
                 });
 
                 active_parent = Some(symbol_id);

@@ -52,7 +52,10 @@ pub fn write_payload_to_db(
     verbose: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let raw_imports_str = if let Some(ref analysis) = payload.analysis {
-        serde_json::to_string(&analysis.imports).unwrap_or_else(|_| "[]".to_string())
+        serde_json::to_string(&analysis.imports).unwrap_or_else(|err| {
+            eprintln!("Warning: Failed to serialize imports for '{}': {}", payload.relative_path, err);
+            "[]".to_string()
+        })
     } else {
         "[]".to_string()
     };
@@ -61,7 +64,7 @@ pub fn write_payload_to_db(
         ("path", Value::String(payload.relative_path.clone())),
         ("language", Value::String(payload.language.clone())),
         ("file_size", Value::Int64(payload.size as i64)),
-        ("hash", Value::String(payload.hash.clone())),
+        ("hash", Value::String(payload.hash)),
         ("raw_imports", Value::String(raw_imports_str)),
     ];
     conn.execute(stmts.file_upsert, file_params)?;
@@ -78,8 +81,9 @@ pub fn write_payload_to_db(
                 .filter(|c| c.line >= node.start_line && c.line <= node.end_line)
                 .cloned()
                 .collect();
-            if let Ok(serialized) = serde_json::to_string(&symbol_calls) {
-                raw_calls_str = serialized;
+            match serde_json::to_string(&symbol_calls) {
+                Ok(serialized) => raw_calls_str = serialized,
+                Err(err) => eprintln!("Warning: Failed to serialize calls for '{}::{}': {}", payload.relative_path, node.name, err),
             }
 
             let node_params: Vec<(&str, Value)> = vec![
@@ -330,274 +334,280 @@ fn init_schema(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
+    println!("==================================================");
+    println!("⚡ Synapse Indexer Initializing");
+    println!("==================================================");
+    println!("Workspace Target : {}", path.display());
+    println!("Database Target  : {}", db_path.display());
+    println!("--------------------------------------------------");
+
+    if !path.exists() {
+        eprintln!(
+            "Error: Target workspace path '{}' does not exist.",
+            path.display()
+        );
+        std::process::exit(1);
+    }
+
+    // Ensure parent directory for database exists
+    if let Some(parent) = db_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            if let Err(err) = std::fs::create_dir_all(parent) {
+                eprintln!("Error: Failed to create database path directory: {}", err);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // 1. Initialize Database
+    println!("📦 Connecting to LadybugDB...");
+    let db = match Database::new(&db_path, SystemConfig::default()) {
+        Ok(database) => database,
+        Err(err) => {
+            eprintln!(
+                "Error: Failed to connect to LadybugDB at '{}': {}",
+                db_path.display(),
+                err
+            );
+            std::process::exit(1);
+        }
+    };
+
+    // 2. Establish Connection
+    let conn = match Connection::new(&db) {
+        Ok(connection) => connection,
+        Err(err) => {
+            eprintln!("Error: Failed to open database connection: {}", err);
+            std::process::exit(1);
+        }
+    };
+
+    // 3. Initialize Tables / Verify Schema
+    println!("🛠️  Verifying graph database schema...");
+    if let Err(err) = init_schema(&conn) {
+        eprintln!("Error: Failed to verify schema tables: {}", err);
+        std::process::exit(1);
+    }
+
+    // Check if existing tables are compatible (have raw_imports and raw_calls columns)
+    if conn
+        .query("MATCH (f:File) RETURN f.raw_imports LIMIT 1")
+        .is_err()
+    {
+        eprintln!("\n❌ Database Compatibility Error!");
+        eprintln!("The database at '{}' is incompatible (missing 'raw_imports' column on 'File').", db_path.display());
+        eprintln!(
+            "Please delete the database file and run the indexer again to recreate it."
+        );
+        std::process::exit(1);
+    }
+    if conn
+        .query("MATCH (s:Symbol) RETURN s.raw_calls LIMIT 1")
+        .is_err()
+    {
+        eprintln!("\n❌ Database Compatibility Error!");
+        eprintln!("The database at '{}' is incompatible (missing 'raw_calls' column on 'Symbol').", db_path.display());
+        eprintln!(
+            "Please delete the database file and run the indexer again to recreate it."
+        );
+        std::process::exit(1);
+    }
+
+    // 4. Load hashes cache
+    let hash_cache = match load_all_hashes(&conn) {
+        Ok(cache) => cache,
+        Err(err) => {
+            eprintln!("Warning: Failed to load hash cache (will re-index all files): {}", err);
+            HashMap::new()
+        }
+    };
+
+    // Synchronous bounded channel
+    let (tx, rx) = std::sync::mpsc::sync_channel::<ParsedPayload>(100);
+
+    // DB writer runner thread
+    let verbose_writer = verbose;
+    let db_path_clone = db_path.clone();
+    let db_writer = std::thread::spawn(move || {
+        let db = match Database::new(&db_path_clone, SystemConfig::default()) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("Error: DB writer failed to open database '{}': {}", db_path_clone.display(), e);
+                return (0u64, 0u64);
+            }
+        };
+        let conn = match Connection::new(&db) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Error: DB writer failed to connect: {}", e);
+                return (0u64, 0u64);
+            }
+        };
+        
+        let mut prepared_file_upsert = conn.prepare(
+            "MERGE (f:File {path: $path}) \
+             ON CREATE SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports \
+             ON MATCH SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports"
+        ).expect("Bug: file_upsert prepare failed (hardcoded SQL)");
+        let mut prepared_delete_symbols = conn.prepare(
+            "MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol) DETACH DELETE s"
+        ).expect("Bug: delete_symbols prepare failed (hardcoded SQL)");
+        let mut prepared_symbol_create = conn.prepare(
+            "MERGE (s:Symbol {id: $id}) \
+             ON CREATE SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls \
+             ON MATCH SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls"
+        ).expect("Bug: symbol_create prepare failed (hardcoded SQL)");
+        let mut prepared_containment_file = conn.prepare(
+            "MATCH (f:File {path: $from_id}), (s:Symbol {id: $to_id}) MERGE (f)-[:CONTAINS]->(s)"
+        ).expect("Bug: containment_file prepare failed (hardcoded SQL)");
+        let mut prepared_containment_symbol = conn.prepare(
+            "MATCH (p:Symbol {id: $from_id}), (c:Symbol {id: $to_id}) MERGE (p)-[:CONTAINS]->(c)"
+        ).expect("Bug: containment_symbol prepare failed (hardcoded SQL)");
+
+        let mut stmts = PreparedStatements {
+            file_upsert: &mut prepared_file_upsert,
+            delete_symbols: &mut prepared_delete_symbols,
+            symbol_create: &mut prepared_symbol_create,
+            containment_file: &mut prepared_containment_file,
+            containment_symbol: &mut prepared_containment_symbol,
+        };
+
+        let mut local_file_count = 0;
+        let mut local_byte_count = 0u64;
+
+        while let Ok(payload) = rx.recv() {
+            let size = payload.size;
+            let path = payload.relative_path.clone();
+            match write_payload_to_db(&conn, payload, &mut stmts, verbose_writer) {
+                Ok(_) => {
+                    local_file_count += 1;
+                    local_byte_count += size;
+                }
+                Err(err) => {
+                    eprintln!("Error: Failed to index file '{}' in database: {}", path, err);
+                }
+            }
+        }
+        (local_file_count, local_byte_count)
+    });
+
+    // Parallel Traversal
+    let walker = WalkBuilder::new(&path).build_parallel();
+    let abs_db_path = db_path.canonicalize().unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(&db_path));
+    let path_clone = path.clone();
+    
+    // Sync-atomic counters for skips
+    let skip_count_atomic = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let skip_count_atomic_clone = skip_count_atomic.clone();
+
+    println!("--------------------------------------------------");
+    println!("🔍 Traversing workspace & populating graph...");
+    println!("--------------------------------------------------");
+
+    walker.run(|| {
+        let tx = tx.clone();
+        let hash_cache = &hash_cache;
+        let abs_db_path = &abs_db_path;
+        let path_clone = &path_clone;
+        let skip_count = &skip_count_atomic_clone;
+
+        Box::new(move |entry| {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => return ignore::WalkState::Continue,
+            };
+            let file_path = entry.path();
+            if file_path.is_file() {
+                let abs_file = file_path.canonicalize().unwrap_or_else(|_| file_path.to_path_buf());
+                let abs_db_str = abs_db_path.to_string_lossy();
+                if abs_file == *abs_db_path || abs_file.to_string_lossy().starts_with(format!("{}.", abs_db_str).as_str()) {
+                    return ignore::WalkState::Continue;
+                }
+
+                let relative_path = file_path.strip_prefix(path_clone).unwrap_or(file_path).to_path_buf();
+                let relative_path_str = relative_path.to_string_lossy().to_string();
+
+                if let Ok(metadata) = entry.metadata() {
+                    let size = metadata.len();
+                    let lang = detect_language(file_path);
+                    if let Ok(hash) = compute_sha256(file_path) {
+                        if let Some(stored_hash) = hash_cache.get(&relative_path_str) {
+                            if *stored_hash == hash {
+                                skip_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                return ignore::WalkState::Continue;
+                            }
+                        }
+
+                        // Load and parse in worker thread
+                        let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                        let is_supported = matches!(ext.as_str(), "rs" | "js" | "jsx" | "ts" | "tsx");
+
+                        let mut analysis_opt = None;
+                        let mut content_opt = None;
+
+                        if is_supported {
+                            if let Ok(mut file_handle) = std::fs::File::open(file_path) {
+                                let mut content = String::new();
+                                if file_handle.read_to_string(&mut content).is_ok() {
+                                    let analysis = parser::ASTParser::parse_file(&relative_path, &content);
+                                    analysis_opt = Some(analysis);
+                                    content_opt = Some(content);
+                                }
+                            }
+                        }
+
+                        let payload = ParsedPayload {
+                            relative_path: relative_path_str,
+                            language: lang,
+                            size,
+                            hash,
+                            analysis: analysis_opt,
+                            content: content_opt,
+                        };
+
+                        let _ = tx.send(payload);
+                    }
+                }
+            }
+            ignore::WalkState::Continue
+        })
+    });
+
+    drop(tx); // Close channel
+
+    // Wait for writes to finish
+    let (file_count_res, byte_count_res) = db_writer.join().expect("Bug: DB writer thread panic");
+    let file_count = file_count_res;
+    let byte_count = byte_count_res;
+    let skip_count = skip_count_atomic.load(std::sync::atomic::Ordering::SeqCst);
+
+
+
+    println!("--------------------------------------------------");
+    println!("✅ Workspace traversal complete!");
+    println!("Total Files Indexed/Updated    : {}", file_count);
+    println!("Total Files Skipped (Unchanged): {}", skip_count);
+    println!(
+        "Aggregate Data Size Managed    : {:.2} MB",
+        (byte_count as f64) / 1024.0 / 1024.0
+    );
+    println!("==================================================");
+
+    // 5. Run Global Linker
+    if let Err(err) = linker::run_linker(&conn, verbose) {
+        eprintln!("Error: Global linking phase failed: {}", err);
+        std::process::exit(1);
+            }
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Index {
-            path,
-            db: db_path,
-            verbose,
-        } => {
-            println!("==================================================");
-            println!("⚡ Synapse Indexer Initializing");
-            println!("==================================================");
-            println!("Workspace Target : {}", path.display());
-            println!("Database Target  : {}", db_path.display());
-            println!("--------------------------------------------------");
-
-            if !path.exists() {
-                eprintln!(
-                    "Error: Target workspace path '{}' does not exist.",
-                    path.display()
-                );
-                std::process::exit(1);
-            }
-
-            // Ensure parent directory for database exists
-            if let Some(parent) = db_path.parent() {
-                if !parent.as_os_str().is_empty() && !parent.exists() {
-                    if let Err(err) = std::fs::create_dir_all(parent) {
-                        eprintln!("Error: Failed to create database path directory: {}", err);
-                        std::process::exit(1);
-                    }
-                }
-            }
-
-            // 1. Initialize Database
-            println!("📦 Connecting to LadybugDB...");
-            let db = match Database::new(&db_path, SystemConfig::default()) {
-                Ok(database) => database,
-                Err(err) => {
-                    eprintln!(
-                        "Error: Failed to connect to LadybugDB at '{}': {}",
-                        db_path.display(),
-                        err
-                    );
-                    std::process::exit(1);
-                }
-            };
-
-            // 2. Establish Connection
-            let conn = match Connection::new(&db) {
-                Ok(connection) => connection,
-                Err(err) => {
-                    eprintln!("Error: Failed to open database connection: {}", err);
-                    std::process::exit(1);
-                }
-            };
-
-            // 3. Initialize Tables / Verify Schema
-            println!("🛠️  Verifying graph database schema...");
-            if let Err(err) = init_schema(&conn) {
-                eprintln!("Error: Failed to verify schema tables: {}", err);
-                std::process::exit(1);
-            }
-
-            // Check if existing tables are compatible (have raw_imports and raw_calls columns)
-            if conn
-                .query("MATCH (f:File) RETURN f.raw_imports LIMIT 1")
-                .is_err()
-            {
-                eprintln!("\n❌ Database Compatibility Error!");
-                eprintln!("The database at '{}' is incompatible (missing 'raw_imports' column on 'File').", db_path.display());
-                eprintln!(
-                    "Please delete the database file and run the indexer again to recreate it."
-                );
-                std::process::exit(1);
-            }
-            if conn
-                .query("MATCH (s:Symbol) RETURN s.raw_calls LIMIT 1")
-                .is_err()
-            {
-                eprintln!("\n❌ Database Compatibility Error!");
-                eprintln!("The database at '{}' is incompatible (missing 'raw_calls' column on 'Symbol').", db_path.display());
-                eprintln!(
-                    "Please delete the database file and run the indexer again to recreate it."
-                );
-                std::process::exit(1);
-            }
-
-            // 4. Load hashes cache
-            let hash_cache = load_all_hashes(&conn).unwrap_or_default();
-
-            // Synchronous bounded channel
-            let (tx, rx) = std::sync::mpsc::sync_channel::<ParsedPayload>(100);
-
-            // DB writer runner thread
-            let verbose_writer = verbose;
-            let db_path_clone = db_path.clone();
-            let db_writer = std::thread::spawn(move || {
-                let db = match Database::new(&db_path_clone, SystemConfig::default()) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        eprintln!("Error: DB writer failed to open database '{}': {}", db_path_clone.display(), e);
-                        return (0u64, 0u64);
-                    }
-                };
-                let conn = match Connection::new(&db) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        eprintln!("Error: DB writer failed to connect: {}", e);
-                        return (0u64, 0u64);
-                    }
-                };
-                
-                let mut prepared_file_upsert = conn.prepare(
-                    "MERGE (f:File {path: $path}) \
-                     ON CREATE SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports \
-                     ON MATCH SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports"
-                ).expect("Bug: file_upsert prepare failed (hardcoded SQL)");
-                let mut prepared_delete_symbols = conn.prepare(
-                    "MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol) DETACH DELETE s"
-                ).expect("Bug: delete_symbols prepare failed (hardcoded SQL)");
-                let mut prepared_symbol_create = conn.prepare(
-                    "MERGE (s:Symbol {id: $id}) \
-                     ON CREATE SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls \
-                     ON MATCH SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls"
-                ).expect("Bug: symbol_create prepare failed (hardcoded SQL)");
-                let mut prepared_containment_file = conn.prepare(
-                    "MATCH (f:File {path: $from_id}), (s:Symbol {id: $to_id}) MERGE (f)-[:CONTAINS]->(s)"
-                ).expect("Bug: containment_file prepare failed (hardcoded SQL)");
-                let mut prepared_containment_symbol = conn.prepare(
-                    "MATCH (p:Symbol {id: $from_id}), (c:Symbol {id: $to_id}) MERGE (p)-[:CONTAINS]->(c)"
-                ).expect("Bug: containment_symbol prepare failed (hardcoded SQL)");
-
-                let mut stmts = PreparedStatements {
-                    file_upsert: &mut prepared_file_upsert,
-                    delete_symbols: &mut prepared_delete_symbols,
-                    symbol_create: &mut prepared_symbol_create,
-                    containment_file: &mut prepared_containment_file,
-                    containment_symbol: &mut prepared_containment_symbol,
-                };
-
-                let mut local_file_count = 0;
-                let mut local_byte_count = 0u64;
-
-                while let Ok(payload) = rx.recv() {
-                    let size = payload.size;
-                    let path = payload.relative_path.clone();
-                    match write_payload_to_db(&conn, payload, &mut stmts, verbose_writer) {
-                        Ok(_) => {
-                            local_file_count += 1;
-                            local_byte_count += size;
-                        }
-                        Err(err) => {
-                            eprintln!("Error: Failed to index file '{}' in database: {}", path, err);
-                        }
-                    }
-                }
-                (local_file_count, local_byte_count)
-            });
-
-            // Parallel Traversal
-            let walker = WalkBuilder::new(&path).build_parallel();
-            let abs_db_path = db_path.canonicalize().unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(&db_path));
-            let path_clone = path.clone();
-            
-            // Sync-atomic counters for skips
-            let skip_count_atomic = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let skip_count_atomic_clone = skip_count_atomic.clone();
-
-            println!("--------------------------------------------------");
-            println!("🔍 Traversing workspace & populating graph...");
-            println!("--------------------------------------------------");
-
-            walker.run(|| {
-                let tx = tx.clone();
-                let hash_cache = &hash_cache;
-                let abs_db_path = &abs_db_path;
-                let path_clone = &path_clone;
-                let skip_count = &skip_count_atomic_clone;
-
-                Box::new(move |entry| {
-                    let entry = match entry {
-                        Ok(e) => e,
-                        Err(_) => return ignore::WalkState::Continue,
-                    };
-                    let file_path = entry.path();
-                    if file_path.is_file() {
-                        let abs_file = file_path.canonicalize().unwrap_or_else(|_| file_path.to_path_buf());
-                        let abs_db_str = abs_db_path.to_string_lossy();
-                        if abs_file == *abs_db_path || abs_file.to_string_lossy().starts_with(format!("{}.", abs_db_str).as_str()) {
-                            return ignore::WalkState::Continue;
-                        }
-
-                        let relative_path = file_path.strip_prefix(path_clone).unwrap_or(file_path).to_path_buf();
-                        let relative_path_str = relative_path.to_string_lossy().to_string();
-
-                        if let Ok(metadata) = entry.metadata() {
-                            let size = metadata.len();
-                            let lang = detect_language(file_path);
-                            if let Ok(hash) = compute_sha256(file_path) {
-                                if let Some(stored_hash) = hash_cache.get(&relative_path_str) {
-                                    if *stored_hash == hash {
-                                        skip_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                                        return ignore::WalkState::Continue;
-                                    }
-                                }
-
-                                // Load and parse in worker thread
-                                let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                                let is_supported = matches!(ext.as_str(), "rs" | "js" | "jsx" | "ts" | "tsx");
-
-                                let mut analysis_opt = None;
-                                let mut content_opt = None;
-
-                                if is_supported {
-                                    if let Ok(mut file_handle) = std::fs::File::open(file_path) {
-                                        let mut content = String::new();
-                                        if file_handle.read_to_string(&mut content).is_ok() {
-                                            let analysis = parser::ASTParser::parse_file(&relative_path, &content);
-                                            analysis_opt = Some(analysis);
-                                            content_opt = Some(content);
-                                        }
-                                    }
-                                }
-
-                                let payload = ParsedPayload {
-                                    relative_path: relative_path_str,
-                                    language: lang,
-                                    size,
-                                    hash,
-                                    analysis: analysis_opt,
-                                    content: content_opt,
-                                };
-
-                                let _ = tx.send(payload);
-                            }
-                        }
-                    }
-                    ignore::WalkState::Continue
-                })
-            });
-
-            drop(tx); // Close channel
-
-            // Wait for writes to finish
-            let (file_count_res, byte_count_res) = db_writer.join().expect("Bug: DB writer thread panic");
-            let file_count = file_count_res;
-            let byte_count = byte_count_res;
-            let skip_count = skip_count_atomic.load(std::sync::atomic::Ordering::SeqCst);
-
-
-
-            println!("--------------------------------------------------");
-            println!("✅ Workspace traversal complete!");
-            println!("Total Files Indexed/Updated    : {}", file_count);
-            println!("Total Files Skipped (Unchanged): {}", skip_count);
-            println!(
-                "Aggregate Data Size Managed    : {:.2} MB",
-                (byte_count as f64) / 1024.0 / 1024.0
-            );
-            println!("==================================================");
-
-            // 5. Run Global Linker
-            if let Err(err) = linker::run_linker(&conn, verbose) {
-                eprintln!("Error: Global linking phase failed: {}", err);
-                std::process::exit(1);
-            }
+        Commands::Index { path, db: db_path, verbose } => {
+            run_index(path, db_path, verbose);
         }
         Commands::Query { query, db } => {
             if let Err(err) = query_cli::handle_query(&query, &db) {
@@ -890,6 +900,53 @@ fn handle_similar(
 mod tests {
     use super::*;
 
+    fn with_write_payload_db(test_name: &str, f: impl FnOnce(&Connection, &mut PreparedStatements)) {
+        let name = format!("test_{}.lbug", test_name);
+        let db_path = Path::new(&name);
+        if db_path.exists() {
+            let _ = std::fs::remove_dir_all(db_path);
+        }
+        let db = Database::new(db_path, SystemConfig::default()).unwrap();
+        let conn = Connection::new(&db).unwrap();
+        init_schema(&conn).unwrap();
+
+        let mut file_upsert = conn.prepare(
+            "MERGE (f:File {path: $path}) \
+             ON CREATE SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports \
+             ON MATCH SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports"
+        ).unwrap();
+        let mut delete_symbols = conn.prepare(
+            "MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol) DETACH DELETE s"
+        ).unwrap();
+        let mut symbol_create = conn.prepare(
+            "MERGE (s:Symbol {id: $id}) \
+             ON CREATE SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls \
+             ON MATCH SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls"
+        ).unwrap();
+        let mut containment_file = conn.prepare(
+            "MATCH (f:File {path: $from_id}), (s:Symbol {id: $to_id}) MERGE (f)-[:CONTAINS]->(s)"
+        ).unwrap();
+        let mut containment_symbol = conn.prepare(
+            "MATCH (p:Symbol {id: $from_id}), (c:Symbol {id: $to_id}) MERGE (p)-[:CONTAINS]->(c)"
+        ).unwrap();
+
+        let mut stmts = PreparedStatements {
+            file_upsert: &mut file_upsert,
+            delete_symbols: &mut delete_symbols,
+            symbol_create: &mut symbol_create,
+            containment_file: &mut containment_file,
+            containment_symbol: &mut containment_symbol,
+        };
+
+        f(&conn, &mut stmts);
+
+        drop(conn);
+        drop(db);
+        if db_path.exists() {
+            let _ = std::fs::remove_dir_all(db_path);
+        }
+    }
+
     #[test]
     fn test_cli_parsing_callers() {
         let args = vec![
@@ -1048,68 +1105,66 @@ mod tests {
     }
 
     #[test]
-    fn test_write_payload_to_db_compiles() {
-        let db_path = Path::new("test_write_payload_unique.lbug");
+    fn test_load_all_hashes_returns_empty_on_error() {
+        let db_path = Path::new("test_load_hashes_error_unique.lbug");
         if db_path.exists() {
             let _ = std::fs::remove_dir_all(db_path);
         }
         let db = Database::new(db_path, SystemConfig::default()).unwrap();
         let conn = Connection::new(&db).unwrap();
-        init_schema(&conn).unwrap();
-
-        let mut prepared_file_upsert = conn.prepare(
-            "MERGE (f:File {path: $path}) \
-             ON CREATE SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports \
-             ON MATCH SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports"
-        ).unwrap();
-        let mut prepared_delete_symbols = conn.prepare(
-            "MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol) DETACH DELETE s"
-        ).unwrap();
-        let mut prepared_symbol_create = conn.prepare(
-            "MERGE (s:Symbol {id: $id}) \
-             ON CREATE SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls \
-             ON MATCH SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls"
-        ).unwrap();
-        let mut prepared_containment_file = conn.prepare(
-            "MATCH (f:File {path: $from_id}), (s:Symbol {id: $to_id}) MERGE (f)-[:CONTAINS]->(s)"
-        ).unwrap();
-        let mut prepared_containment_symbol = conn.prepare(
-            "MATCH (p:Symbol {id: $from_id}), (c:Symbol {id: $to_id}) MERGE (p)-[:CONTAINS]->(c)"
-        ).unwrap();
-
-        let mut stmts = PreparedStatements {
-            file_upsert: &mut prepared_file_upsert,
-            delete_symbols: &mut prepared_delete_symbols,
-            symbol_create: &mut prepared_symbol_create,
-            containment_file: &mut prepared_containment_file,
-            containment_symbol: &mut prepared_containment_symbol,
-        };
-
-        let payload = ParsedPayload {
-            relative_path: "src/dummy.rs".to_string(),
-            language: "Rust".to_string(),
-            size: 100,
-            hash: "dummyhash".to_string(),
-            analysis: None,
-            content: None,
-        };
-
-        let res = write_payload_to_db(&conn, payload, &mut stmts, false);
-        assert!(res.is_ok());
-
-        // Verify file is in DB
-        {
-            let mut stmt = conn.prepare("MATCH (f:File {path: 'src/dummy.rs'}) RETURN f.hash").unwrap();
-            let mut result = conn.execute(&mut stmt, vec![]).unwrap();
-            let row = result.next().unwrap();
-            assert_eq!(row.first().unwrap(), &Value::String("dummyhash".to_string()));
-        }
-
+        // No schema init — bare DB, File table doesn't exist
+        let result = load_all_hashes(&conn);
+        // Should return Err (query on nonexistent table fails)
+        assert!(result.is_err(), "Expected error when File table missing, got Ok");
         drop(conn);
         drop(db);
         if db_path.exists() {
             let _ = std::fs::remove_dir_all(db_path);
         }
+    }
+
+    #[test]
+    fn test_write_payload_to_db_compiles() {
+        with_write_payload_db("write_payload_compiles", |conn, stmts| {
+            let payload = ParsedPayload {
+                relative_path: "src/dummy.rs".to_string(),
+                language: "Rust".to_string(),
+                size: 100,
+                hash: "dummyhash".to_string(),
+                analysis: None,
+                content: None,
+            };
+            let res = write_payload_to_db(conn, payload, stmts, false);
+            assert!(res.is_ok());
+            {
+                let mut stmt = conn.prepare("MATCH (f:File {path: 'src/dummy.rs'}) RETURN f.hash").unwrap();
+                let mut result = conn.execute(&mut stmt, vec![]).unwrap();
+                let row = result.next().unwrap();
+                assert_eq!(row.first().unwrap(), &Value::String("dummyhash".to_string()));
+            }
+        });
+    }
+
+    #[test]
+    fn test_write_payload_raw_imports_defaults_to_empty_array() {
+        with_write_payload_db("write_payload_raw_imports", |conn, stmts| {
+            let payload = ParsedPayload {
+                relative_path: "src/no_analysis.rs".to_string(),
+                language: "Rust".to_string(),
+                size: 50,
+                hash: "abc".to_string(),
+                analysis: None,
+                content: None,
+            };
+            let res = write_payload_to_db(conn, payload, stmts, false);
+            assert!(res.is_ok());
+            {
+                let mut stmt = conn.prepare("MATCH (f:File {path: 'src/no_analysis.rs'}) RETURN f.raw_imports").unwrap();
+                let mut result = conn.execute(&mut stmt, vec![]).unwrap();
+                let row = result.next().unwrap();
+                assert_eq!(row.first().unwrap(), &Value::String("[]".to_string()));
+            }
+        });
     }
 }
 

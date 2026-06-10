@@ -1,5 +1,5 @@
-use lbug::{Connection, Value};
 use crate::resolver::{self, FileRecord, SymbolRecord};
+use lbug::{Connection, Value};
 
 pub fn run_linker(conn: &Connection, verbose: bool) -> Result<(), Box<dyn std::error::Error>> {
     if verbose {

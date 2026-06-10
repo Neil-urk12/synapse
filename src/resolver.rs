@@ -331,18 +331,17 @@ mod tests {
 
         #[test]
         fn no_match_returns_empty() {
-            let files = vec![
-                file_record("src/main.rs", r#"[{"path":"crate::nonexistent","line":1}]"#),
-            ];
+            let files = vec![file_record(
+                "src/main.rs",
+                r#"[{"path":"crate::nonexistent","line":1}]"#,
+            )];
             let edges = resolve_imports(&files);
             assert!(edges.is_empty());
         }
 
         #[test]
         fn invalid_json_skipped() {
-            let files = vec![
-                file_record("src/main.rs", "not json"),
-            ];
+            let files = vec![file_record("src/main.rs", "not json")];
             let edges = resolve_imports(&files);
             assert!(edges.is_empty());
         }
@@ -354,7 +353,12 @@ mod tests {
         #[test]
         fn file_scope_resolution() {
             let symbols = vec![
-                symbol_record("src/main.rs::main", "main", "Function", r#"[{"name":"helper","line":5,"is_method":false}]"#),
+                symbol_record(
+                    "src/main.rs::main",
+                    "main",
+                    "Function",
+                    r#"[{"name":"helper","line":5,"is_method":false}]"#,
+                ),
                 symbol_record("src/main.rs::helper", "helper", "Function", "[]"),
             ];
             let edges = resolve_calls(&symbols, &[]);
@@ -368,7 +372,12 @@ mod tests {
         #[test]
         fn import_scope_resolution() {
             let symbols = vec![
-                symbol_record("src/main.rs::main", "main", "Function", r#"[{"name":"parse","line":10,"is_method":false}]"#),
+                symbol_record(
+                    "src/main.rs::main",
+                    "main",
+                    "Function",
+                    r#"[{"name":"parse","line":10,"is_method":false}]"#,
+                ),
                 symbol_record("src/parser.rs::parse", "parse", "Function", "[]"),
             ];
             let import_edges = vec![("src/main.rs".to_string(), "src/parser.rs".to_string())];
@@ -383,7 +392,12 @@ mod tests {
         #[test]
         fn method_call_step1() {
             let symbols = vec![
-                symbol_record("src/lib.rs::MyStruct::do_work", "do_work", "Method", r#"[{"name":"helper","line":3,"is_method":true}]"#),
+                symbol_record(
+                    "src/lib.rs::MyStruct::do_work",
+                    "do_work",
+                    "Method",
+                    r#"[{"name":"helper","line":3,"is_method":true}]"#,
+                ),
                 symbol_record("src/lib.rs::MyStruct::helper", "helper", "Method", "[]"),
             ];
             let edges = resolve_calls(&symbols, &[]);
@@ -397,7 +411,12 @@ mod tests {
         #[test]
         fn global_fallback() {
             let symbols = vec![
-                symbol_record("src/main.rs::main", "main", "Function", r#"[{"name":"parse_file","line":7,"is_method":false}]"#),
+                symbol_record(
+                    "src/main.rs::main",
+                    "main",
+                    "Function",
+                    r#"[{"name":"parse_file","line":7,"is_method":false}]"#,
+                ),
                 symbol_record("src/parser.rs::parse_file", "parse_file", "Function", "[]"),
             ];
             // No import edge — should still resolve via global fallback
@@ -409,18 +428,24 @@ mod tests {
 
         #[test]
         fn unknown_call_returns_empty() {
-            let symbols = vec![
-                symbol_record("src/main.rs::main", "main", "Function", r#":[{"name":"does_not_exist","line":1,"is_method":false}]"#),
-            ];
+            let symbols = vec![symbol_record(
+                "src/main.rs::main",
+                "main",
+                "Function",
+                r#":[{"name":"does_not_exist","line":1,"is_method":false}]"#,
+            )];
             let edges = resolve_calls(&symbols, &[]);
             assert!(edges.is_empty());
         }
 
         #[test]
         fn invalid_calls_json_skipped() {
-            let symbols = vec![
-                symbol_record("src/main.rs::main", "main", "Function", "bad json"),
-            ];
+            let symbols = vec![symbol_record(
+                "src/main.rs::main",
+                "main",
+                "Function",
+                "bad json",
+            )];
             let edges = resolve_calls(&symbols, &[]);
             assert!(edges.is_empty());
         }

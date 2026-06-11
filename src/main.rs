@@ -5,7 +5,7 @@ pub mod file_utils;
 pub mod index;
 pub mod linker;
 pub mod parser;
-pub mod query_cli;
+pub mod query;
 pub mod resolver;
 pub mod schema;
 pub mod similar;
@@ -177,7 +177,7 @@ async fn main() {
             index::run_index(path, db_path, verbose);
         }
         Commands::Query { query, db } => {
-            if let Err(err) = query_cli::handle_query(&query, &db) {
+            if let Err(err) = query::handle_query(&query, &db) {
                 eprintln!("Error: {}", err);
                 std::process::exit(1);
             }
@@ -190,7 +190,7 @@ async fn main() {
             db,
         } => {
             if let Err(err) =
-                query_cli::handle_context(symbol.as_deref(), file.as_deref(), fuzzy, &format, &db)
+                query::handle_context(symbol.as_deref(), file.as_deref(), fuzzy, &format, &db)
             {
                 eprintln!("Error: {}", err);
                 std::process::exit(1);
@@ -202,7 +202,7 @@ async fn main() {
             format,
             db,
         } => {
-            if let Err(err) = query_cli::handle_callers(&symbol, exact, &format, &db) {
+            if let Err(err) = query::handle_callers(&symbol, exact, &format, &db) {
                 eprintln!("Error: {}", err);
                 std::process::exit(1);
             }
@@ -213,7 +213,7 @@ async fn main() {
             format,
             db,
         } => {
-            if let Err(err) = query_cli::handle_callees(&symbol, exact, &format, &db) {
+            if let Err(err) = query::handle_callees(&symbol, exact, &format, &db) {
                 eprintln!("Error: {}", err);
                 std::process::exit(1);
             }
@@ -224,13 +224,13 @@ async fn main() {
             format,
             db,
         } => {
-            if let Err(err) = query_cli::handle_dependencies(&file, exact, &format, &db) {
+            if let Err(err) = query::handle_dependencies(&file, exact, &format, &db) {
                 eprintln!("Error: {}", err);
                 std::process::exit(1);
             }
         }
         Commands::Repl { db } => {
-            if let Err(err) = query_cli::run_repl(&db) {
+            if let Err(err) = query::run_repl(&db) {
                 eprintln!("Error: {}", err);
                 std::process::exit(1);
             }

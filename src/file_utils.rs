@@ -20,6 +20,21 @@ pub fn compute_sha256(path: &Path) -> io::Result<String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
+/// Extract source code lines from a file's content string.
+/// Lines are 1-indexed. Returns empty string for invalid ranges.
+pub fn slice_source_code(content: &str, start_line: usize, end_line: usize) -> String {
+    if start_line == 0 || end_line == 0 || start_line > end_line {
+        return String::new();
+    }
+    let lines: Vec<&str> = content.lines().collect();
+    let start_idx = start_line - 1;
+    let end_idx = std::cmp::min(end_line, lines.len());
+    if start_idx >= lines.len() {
+        return String::new();
+    }
+    lines[start_idx..end_idx].join("\n")
+}
+
 /// Detect language from file extension.
 pub fn detect_language(path: &Path) -> String {
     match path.extension().and_then(|ext| ext.to_str()) {
@@ -37,5 +52,33 @@ pub fn detect_language(path: &Path) -> String {
         Some("md") => "Markdown".to_string(),
         Some("json") => "JSON".to_string(),
         _ => "Unknown".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_slice_source_code() {
+        let content = "line 1\nline 2\nline 3\nline 4\nline 5";
+        let sliced = slice_source_code(content, 2, 4);
+        assert_eq!(sliced, "line 2\nline 3\nline 4");
+    }
+
+    #[test]
+    fn test_slice_source_code_invalid_range() {
+        let content = "line 1\nline 2\nline 3";
+        assert_eq!(slice_source_code(content, 0, 2), "");
+        assert_eq!(slice_source_code(content, 2, 0), "");
+        assert_eq!(slice_source_code(content, 3, 2), "");
+    }
+
+    #[test]
+    fn test_slice_source_code_out_of_bounds() {
+        let content = "line 1\nline 2";
+        assert_eq!(slice_source_code(content, 5, 6), "");
+        let sliced = slice_source_code(content, 1, 10);
+        assert_eq!(sliced, "line 1\nline 2");
     }
 }

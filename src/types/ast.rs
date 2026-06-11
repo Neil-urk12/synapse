@@ -19,6 +19,17 @@ pub struct FileAnalysis {
     pub calls: Vec<RawCall>,
 }
 
+impl FileAnalysis {
+    pub fn empty() -> Self {
+        FileAnalysis {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            imports: Vec::new(),
+            calls: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeData {
     pub id: String,

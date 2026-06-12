@@ -65,7 +65,7 @@ impl LanguageParser for JavaKotlinParser {
 
 fn traverse_java(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<String>) {
     let kind = node.kind();
-    let mut active_parent = current_parent_id.clone();
+    let mut active_parent = current_parent_id;
     let start_point = node.start_position();
     let end_point = node.end_position();
 
@@ -76,7 +76,7 @@ fn traverse_java(node: Node, ctx: &mut TraverseContext, current_parent_id: Optio
                 loop {
                     let child = cursor.node();
                     if child.kind() == "scoped_identifier" || child.kind() == "identifier" {
-                        let path = child.utf8_text(ctx.source).unwrap_or("").to_string();
+                        let path = child.utf8_text(ctx.source).unwrap_or("").to_owned();
                         if !path.is_empty() {
                             ctx.imports.push(RawImport {
                                 path,
@@ -93,7 +93,7 @@ fn traverse_java(node: Node, ctx: &mut TraverseContext, current_parent_id: Optio
         }
         "method_invocation" => {
             if let Some(name_node) = node.child_by_field_name("name") {
-                let name = name_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                let name = name_node.utf8_text(ctx.source).unwrap_or("").to_owned();
                 let has_receiver = node.child_by_field_name("object").is_some();
                 let is_valid =
                     !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
@@ -111,9 +111,9 @@ fn traverse_java(node: Node, ctx: &mut TraverseContext, current_parent_id: Optio
                 name_node
                     .utf8_text(ctx.source)
                     .unwrap_or("anonymous")
-                    .to_string()
+                    .to_owned()
             } else {
-                "anonymous".to_string()
+                "anonymous".to_owned()
             };
 
             let kind_label = if kind == "class_declaration" {
@@ -122,7 +122,7 @@ fn traverse_java(node: Node, ctx: &mut TraverseContext, current_parent_id: Optio
                 "Interface"
             };
 
-            let symbol_id = if let Some(ref parent) = current_parent_id {
+            let symbol_id = if let Some(ref parent) = active_parent {
                 format!("{}::{}", parent, name)
             } else {
                 format!("{}::{}", ctx.file_path, name)
@@ -133,21 +133,21 @@ fn traverse_java(node: Node, ctx: &mut TraverseContext, current_parent_id: Optio
             ctx.nodes.push(NodeData {
                 id: symbol_id.clone(),
                 name,
-                kind: kind_label.to_string(),
+                kind: kind_label.to_owned(),
                 start_line: start_point.row + 1,
                 start_col: start_point.column + 1,
                 end_line: end_point.row + 1,
                 signature,
             });
 
-            let from_id = current_parent_id
+            let from_id = active_parent
                 .as_deref()
                 .unwrap_or(ctx.file_path)
-                .to_string();
+                .to_owned();
             ctx.edges.push(EdgeData {
                 from_id,
                 to_id: symbol_id.clone(),
-                edge_type: "CONTAINS".to_string(),
+                edge_type: "CONTAINS".to_owned(),
             });
 
             active_parent = Some(symbol_id);
@@ -157,9 +157,9 @@ fn traverse_java(node: Node, ctx: &mut TraverseContext, current_parent_id: Optio
                 name_node
                     .utf8_text(ctx.source)
                     .unwrap_or("anonymous")
-                    .to_string()
+                    .to_owned()
             } else {
-                "anonymous".to_string()
+                "anonymous".to_owned()
             };
 
             let kind_label = if kind == "constructor_declaration" {
@@ -168,7 +168,7 @@ fn traverse_java(node: Node, ctx: &mut TraverseContext, current_parent_id: Optio
                 "Method"
             };
 
-            let symbol_id = if let Some(ref parent) = current_parent_id {
+            let symbol_id = if let Some(ref parent) = active_parent {
                 format!("{}::{}", parent, name)
             } else {
                 format!("{}::{}", ctx.file_path, name)
@@ -179,21 +179,21 @@ fn traverse_java(node: Node, ctx: &mut TraverseContext, current_parent_id: Optio
             ctx.nodes.push(NodeData {
                 id: symbol_id.clone(),
                 name,
-                kind: kind_label.to_string(),
+                kind: kind_label.to_owned(),
                 start_line: start_point.row + 1,
                 start_col: start_point.column + 1,
                 end_line: end_point.row + 1,
                 signature,
             });
 
-            let from_id = current_parent_id
+            let from_id = active_parent
                 .as_deref()
                 .unwrap_or(ctx.file_path)
-                .to_string();
+                .to_owned();
             ctx.edges.push(EdgeData {
                 from_id,
                 to_id: symbol_id.clone(),
-                edge_type: "CONTAINS".to_string(),
+                edge_type: "CONTAINS".to_owned(),
             });
 
             active_parent = Some(symbol_id);
@@ -214,7 +214,7 @@ fn traverse_java(node: Node, ctx: &mut TraverseContext, current_parent_id: Optio
 
 fn traverse_kotlin(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<String>) {
     let kind = node.kind();
-    let mut active_parent = current_parent_id.clone();
+    let mut active_parent = current_parent_id;
     let start_point = node.start_position();
     let end_point = node.end_position();
 
@@ -225,7 +225,7 @@ fn traverse_kotlin(node: Node, ctx: &mut TraverseContext, current_parent_id: Opt
                 loop {
                     let child = cursor.node();
                     if child.kind() == "identifier" {
-                        let path = child.utf8_text(ctx.source).unwrap_or("").to_string();
+                        let path = child.utf8_text(ctx.source).unwrap_or("").to_owned();
                         if !path.is_empty() {
                             ctx.imports.push(RawImport {
                                 path,
@@ -262,7 +262,7 @@ fn traverse_kotlin(node: Node, ctx: &mut TraverseContext, current_parent_id: Opt
                                             name = target
                                                 .utf8_text(ctx.source)
                                                 .unwrap_or("")
-                                                .to_string();
+                                                .to_owned();
                                             break;
                                         }
                                         if !suffix_cursor.goto_next_sibling() {
@@ -278,7 +278,7 @@ fn traverse_kotlin(node: Node, ctx: &mut TraverseContext, current_parent_id: Opt
                         }
                     }
                 } else if first_child.kind() == "simple_identifier" {
-                    name = first_child.utf8_text(ctx.source).unwrap_or("").to_string();
+                    name = first_child.utf8_text(ctx.source).unwrap_or("").to_owned();
                 }
             }
 
@@ -293,7 +293,7 @@ fn traverse_kotlin(node: Node, ctx: &mut TraverseContext, current_parent_id: Opt
             }
         }
         "class_declaration" | "object_declaration" | "interface_declaration" => {
-            let mut name = "anonymous".to_string();
+            let mut name = "anonymous".to_owned();
             let mut cursor = node.walk();
             if cursor.goto_first_child() {
                 loop {
@@ -302,7 +302,7 @@ fn traverse_kotlin(node: Node, ctx: &mut TraverseContext, current_parent_id: Opt
                         name = child
                             .utf8_text(ctx.source)
                             .unwrap_or("anonymous")
-                            .to_string();
+                            .to_owned();
                         break;
                     }
                     if !cursor.goto_next_sibling() {
@@ -317,7 +317,7 @@ fn traverse_kotlin(node: Node, ctx: &mut TraverseContext, current_parent_id: Opt
                 _ => "Symbol",
             };
 
-            let symbol_id = if let Some(ref parent) = current_parent_id {
+            let symbol_id = if let Some(ref parent) = active_parent {
                 format!("{}::{}", parent, name)
             } else {
                 format!("{}::{}", ctx.file_path, name)
@@ -328,27 +328,27 @@ fn traverse_kotlin(node: Node, ctx: &mut TraverseContext, current_parent_id: Opt
             ctx.nodes.push(NodeData {
                 id: symbol_id.clone(),
                 name,
-                kind: kind_label.to_string(),
+                kind: kind_label.to_owned(),
                 start_line: start_point.row + 1,
                 start_col: start_point.column + 1,
                 end_line: end_point.row + 1,
                 signature,
             });
 
-            let from_id = current_parent_id
+            let from_id = active_parent
                 .as_deref()
                 .unwrap_or(ctx.file_path)
-                .to_string();
+                .to_owned();
             ctx.edges.push(EdgeData {
                 from_id,
                 to_id: symbol_id.clone(),
-                edge_type: "CONTAINS".to_string(),
+                edge_type: "CONTAINS".to_owned(),
             });
 
             active_parent = Some(symbol_id);
         }
         "function_declaration" => {
-            let mut name = "anonymous".to_string();
+            let mut name = "anonymous".to_owned();
             let mut cursor = node.walk();
             if cursor.goto_first_child() {
                 loop {
@@ -357,7 +357,7 @@ fn traverse_kotlin(node: Node, ctx: &mut TraverseContext, current_parent_id: Opt
                         name = child
                             .utf8_text(ctx.source)
                             .unwrap_or("anonymous")
-                            .to_string();
+                            .to_owned();
                         break;
                     }
                     if !cursor.goto_next_sibling() {
@@ -367,7 +367,7 @@ fn traverse_kotlin(node: Node, ctx: &mut TraverseContext, current_parent_id: Opt
             }
 
             let mut is_method = false;
-            if let Some(ref parent) = current_parent_id {
+            if let Some(ref parent) = active_parent {
                 if let Some(parent_node) = ctx.nodes.iter().find(|n| &n.id == parent) {
                     if parent_node.kind == "Class" {
                         is_method = true;
@@ -376,7 +376,7 @@ fn traverse_kotlin(node: Node, ctx: &mut TraverseContext, current_parent_id: Opt
             }
             let kind_label = if is_method { "Method" } else { "Function" };
 
-            let symbol_id = if let Some(ref parent) = current_parent_id {
+            let symbol_id = if let Some(ref parent) = active_parent {
                 format!("{}::{}", parent, name)
             } else {
                 format!("{}::{}", ctx.file_path, name)
@@ -387,21 +387,21 @@ fn traverse_kotlin(node: Node, ctx: &mut TraverseContext, current_parent_id: Opt
             ctx.nodes.push(NodeData {
                 id: symbol_id.clone(),
                 name,
-                kind: kind_label.to_string(),
+                kind: kind_label.to_owned(),
                 start_line: start_point.row + 1,
                 start_col: start_point.column + 1,
                 end_line: end_point.row + 1,
                 signature,
             });
 
-            let from_id = current_parent_id
+            let from_id = active_parent
                 .as_deref()
                 .unwrap_or(ctx.file_path)
-                .to_string();
+                .to_owned();
             ctx.edges.push(EdgeData {
                 from_id,
                 to_id: symbol_id.clone(),
-                edge_type: "CONTAINS".to_string(),
+                edge_type: "CONTAINS".to_owned(),
             });
 
             active_parent = Some(symbol_id);

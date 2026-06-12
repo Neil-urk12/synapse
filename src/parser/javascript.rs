@@ -63,7 +63,7 @@ impl LanguageParser for JsTsParser {
 
 fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<String>) {
     let kind = node.kind();
-    let mut active_parent = current_parent_id.clone();
+    let mut active_parent = current_parent_id;
     let start_point = node.start_position();
     let end_point = node.end_position();
 
@@ -74,7 +74,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                     .utf8_text(ctx.source)
                     .unwrap_or("")
                     .trim_matches(|c| c == '\'' || c == '"')
-                    .to_string();
+                    .to_owned();
                 if !path.is_empty() {
                     ctx.imports.push(RawImport {
                         path,
@@ -85,7 +85,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
         }
         "call_expression" => {
             if let Some(func_node) = node.child_by_field_name("function") {
-                let name = func_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                let name = func_node.utf8_text(ctx.source).unwrap_or("").to_owned();
                 if name == "require" {
                     let mut cursor = node.walk();
                     if cursor.goto_first_child() {
@@ -101,7 +101,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                                                 .utf8_text(ctx.source)
                                                 .unwrap_or("")
                                                 .trim_matches(|c| c == '\'' || c == '"')
-                                                .to_string();
+                                                .to_owned();
                                             if !path.is_empty() {
                                                 ctx.imports.push(RawImport {
                                                     path,
@@ -125,7 +125,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                 } else if func_node.kind() == "member_expression" {
                     if let Some(prop_node) = func_node.child_by_field_name("property") {
                         let method_name =
-                            prop_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                            prop_node.utf8_text(ctx.source).unwrap_or("").to_owned();
                         let is_valid = !method_name.is_empty()
                             && method_name
                                 .chars()
@@ -161,9 +161,9 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                 name_node
                     .utf8_text(ctx.source)
                     .unwrap_or("anonymous")
-                    .to_string()
+                    .to_owned()
             } else {
-                "anonymous".to_string()
+                "anonymous".to_owned()
             };
 
             let kind_label = match kind {
@@ -174,7 +174,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                 _ => "Symbol",
             };
 
-            let symbol_id = if let Some(ref parent) = current_parent_id {
+            let symbol_id = if let Some(ref parent) = active_parent {
                 format!("{}::{}", parent, name)
             } else {
                 format!("{}::{}", ctx.file_path, name)
@@ -185,21 +185,21 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
             ctx.nodes.push(NodeData {
                 id: symbol_id.clone(),
                 name,
-                kind: kind_label.to_string(),
+                kind: kind_label.to_owned(),
                 start_line: start_point.row + 1,
                 start_col: start_point.column + 1,
                 end_line: end_point.row + 1,
                 signature,
             });
 
-            let from_id = current_parent_id
+            let from_id = active_parent
                 .as_deref()
                 .unwrap_or(ctx.file_path)
-                .to_string();
+                .to_owned();
             ctx.edges.push(EdgeData {
                 from_id,
                 to_id: symbol_id.clone(),
-                edge_type: "CONTAINS".to_string(),
+                edge_type: "CONTAINS".to_owned(),
             });
 
             active_parent = Some(symbol_id);

@@ -55,7 +55,7 @@ impl LanguageParser for PythonParser {
 
 fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<String>) {
     let kind = node.kind();
-    let mut active_parent = current_parent_id.clone();
+    let mut active_parent = current_parent_id;
     let start_point = node.start_position();
     let end_point = node.end_position();
 
@@ -66,7 +66,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                 loop {
                     let child = cursor.node();
                     if child.kind() == "dotted_name" {
-                        let path = child.utf8_text(ctx.source).unwrap_or("").to_string();
+                        let path = child.utf8_text(ctx.source).unwrap_or("").to_owned();
                         if !path.is_empty() {
                             ctx.imports.push(RawImport {
                                 path,
@@ -96,7 +96,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                     } else if is_after_from {
                         if child.kind() == "dotted_name" || child.kind() == "relative_import" {
                             module_path =
-                                child.utf8_text(ctx.source).unwrap_or("").to_string();
+                                child.utf8_text(ctx.source).unwrap_or("").to_owned();
                             if !module_path.is_empty() {
                                 ctx.imports.push(RawImport {
                                     path: module_path.clone(),
@@ -110,11 +110,11 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                             || child.kind() == "aliased_import")
                     {
                         let mut name_text =
-                            child.utf8_text(ctx.source).unwrap_or("").to_string();
+                            child.utf8_text(ctx.source).unwrap_or("").to_owned();
                         if child.kind() == "aliased_import" {
                             if let Some(name_node) = child.child_by_field_name("name") {
                                 name_text =
-                                    name_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                                    name_node.utf8_text(ctx.source).unwrap_or("").to_owned();
                             }
                         }
                         if !name_text.is_empty() && !module_path.is_empty() {
@@ -132,11 +132,11 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
         }
         "call" => {
             if let Some(func_node) = node.child_by_field_name("function") {
-                let name = func_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                let name = func_node.utf8_text(ctx.source).unwrap_or("").to_owned();
                 if func_node.kind() == "attribute" {
                     if let Some(attribute_node) = func_node.child_by_field_name("attribute") {
                         let method_name =
-                            attribute_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                            attribute_node.utf8_text(ctx.source).unwrap_or("").to_owned();
                         let is_valid = !method_name.is_empty()
                             && method_name.chars().all(|c| c.is_alphanumeric() || c == '_');
                         if is_valid {
@@ -165,12 +165,12 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                 name_node
                     .utf8_text(ctx.source)
                     .unwrap_or("anonymous")
-                    .to_string()
+                    .to_owned()
             } else {
-                "anonymous".to_string()
+                "anonymous".to_owned()
             };
 
-            let symbol_id = if let Some(ref parent) = current_parent_id {
+            let symbol_id = if let Some(ref parent) = active_parent {
                 format!("{}::{}", parent, name)
             } else {
                 format!("{}::{}", ctx.file_path, name)
@@ -181,21 +181,21 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
             ctx.nodes.push(NodeData {
                 id: symbol_id.clone(),
                 name,
-                kind: "Class".to_string(),
+                kind: "Class".to_owned(),
                 start_line: start_point.row + 1,
                 start_col: start_point.column + 1,
                 end_line: end_point.row + 1,
                 signature,
             });
 
-            let from_id = current_parent_id
+            let from_id = active_parent
                 .as_deref()
                 .unwrap_or(ctx.file_path)
-                .to_string();
+                .to_owned();
             ctx.edges.push(EdgeData {
                 from_id,
                 to_id: symbol_id.clone(),
-                edge_type: "CONTAINS".to_string(),
+                edge_type: "CONTAINS".to_owned(),
             });
 
             active_parent = Some(symbol_id);
@@ -205,13 +205,13 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                 name_node
                     .utf8_text(ctx.source)
                     .unwrap_or("anonymous")
-                    .to_string()
+                    .to_owned()
             } else {
-                "anonymous".to_string()
+                "anonymous".to_owned()
             };
 
             let mut is_method = false;
-            if let Some(ref parent) = current_parent_id {
+            if let Some(ref parent) = active_parent {
                 if let Some(parent_node) = ctx.nodes.iter().find(|n| &n.id == parent) {
                     if parent_node.kind == "Class" {
                         is_method = true;
@@ -221,7 +221,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
 
             let kind_label = if is_method { "Method" } else { "Function" };
 
-            let symbol_id = if let Some(ref parent) = current_parent_id {
+            let symbol_id = if let Some(ref parent) = active_parent {
                 format!("{}::{}", parent, name)
             } else {
                 format!("{}::{}", ctx.file_path, name)
@@ -232,21 +232,21 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
             ctx.nodes.push(NodeData {
                 id: symbol_id.clone(),
                 name,
-                kind: kind_label.to_string(),
+                kind: kind_label.to_owned(),
                 start_line: start_point.row + 1,
                 start_col: start_point.column + 1,
                 end_line: end_point.row + 1,
                 signature,
             });
 
-            let from_id = current_parent_id
+            let from_id = active_parent
                 .as_deref()
                 .unwrap_or(ctx.file_path)
-                .to_string();
+                .to_owned();
             ctx.edges.push(EdgeData {
                 from_id,
                 to_id: symbol_id.clone(),
-                edge_type: "CONTAINS".to_string(),
+                edge_type: "CONTAINS".to_owned(),
             });
 
             active_parent = Some(symbol_id);

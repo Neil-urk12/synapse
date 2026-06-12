@@ -55,7 +55,7 @@ impl LanguageParser for RustParser {
 
 fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<String>) {
     let kind = node.kind();
-    let mut active_parent = current_parent_id.clone();
+    let mut active_parent = current_parent_id;
     let start_point = node.start_position();
     let end_point = node.end_position();
 
@@ -64,7 +64,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
             if let Ok(text) = node.utf8_text(ctx.source) {
                 let trimmed = text.trim().trim_end_matches(';').trim();
                 if let Some(use_idx) = trimmed.find("use ") {
-                    let path = trimmed[use_idx + 4..].trim().to_string();
+                    let path = trimmed[use_idx + 4..].trim().to_owned();
                     for expanded in expand_rust_import(&path) {
                         ctx.imports.push(RawImport {
                             path: expanded,
@@ -76,7 +76,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
         }
         "method_call_expression" => {
             if let Some(name_node) = node.child_by_field_name("name") {
-                let name = name_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                let name = name_node.utf8_text(ctx.source).unwrap_or("").to_owned();
                 let is_valid = !name.is_empty()
                     && name
                         .chars()
@@ -92,11 +92,11 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
         }
         "call_expression" => {
             if let Some(func_node) = node.child_by_field_name("function") {
-                let mut name = func_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                let mut name = func_node.utf8_text(ctx.source).unwrap_or("").to_owned();
                 if func_node.kind() == "field_expression" {
                     if let Some(field_node) = func_node.child_by_field_name("field") {
                         let method_name =
-                            field_node.utf8_text(ctx.source).unwrap_or("").to_string();
+                            field_node.utf8_text(ctx.source).unwrap_or("").to_owned();
                         let is_valid = !method_name.is_empty()
                             && method_name
                                 .chars()
@@ -112,7 +112,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                 } else {
                     if name.contains("::") {
                         if let Some(last_segment) = name.split("::").last() {
-                            name = last_segment.to_string();
+                            name = last_segment.to_owned();
                         }
                     }
                     let is_valid = !name.is_empty()
@@ -139,7 +139,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                 name_node
                     .utf8_text(ctx.source)
                     .unwrap_or("anonymous")
-                    .to_string()
+                    .to_owned()
             } else if kind == "impl_item" {
                 let type_name = if let Some(type_node) = node.child_by_field_name("type") {
                     type_node.utf8_text(ctx.source).unwrap_or("Type")
@@ -153,7 +153,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                     format!("impl {}", type_name)
                 }
             } else {
-                "anonymous".to_string()
+                "anonymous".to_owned()
             };
 
             let kind_label = match kind {
@@ -165,7 +165,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                 _ => "Symbol",
             };
 
-            let symbol_id = if let Some(ref parent) = current_parent_id {
+            let symbol_id = if let Some(ref parent) = active_parent {
                 format!("{}::{}", parent, name)
             } else {
                 format!("{}::{}", ctx.file_path, name)
@@ -176,21 +176,21 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
             ctx.nodes.push(NodeData {
                 id: symbol_id.clone(),
                 name,
-                kind: kind_label.to_string(),
+                kind: kind_label.to_owned(),
                 start_line: start_point.row + 1,
                 start_col: start_point.column + 1,
                 end_line: end_point.row + 1,
                 signature,
             });
 
-            let from_id = current_parent_id
+            let from_id = active_parent
                 .as_deref()
                 .unwrap_or(ctx.file_path)
-                .to_string();
+                .to_owned();
             ctx.edges.push(EdgeData {
                 from_id,
                 to_id: symbol_id.clone(),
-                edge_type: "CONTAINS".to_string(),
+                edge_type: "CONTAINS".to_owned(),
             });
 
             active_parent = Some(symbol_id);

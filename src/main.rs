@@ -10,6 +10,7 @@ pub mod resolver;
 pub mod schema;
 pub mod similar;
 pub mod types;
+pub mod watch;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -162,6 +163,24 @@ enum Commands {
         #[arg(long, default_value = "markdown")]
         format: String,
     },
+    /// Watch for file changes and automatically re-index
+    Watch {
+        /// Path to the codebase directory to watch
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Path to the LadybugDB database storage file
+        #[arg(short, long, default_value = "synapse.lbug")]
+        db: PathBuf,
+
+        /// Seconds to wait after last change before re-indexing
+        #[arg(long, default_value_t = 2)]
+        debounce: u64,
+
+        /// Enable verbose logging output
+        #[arg(short, long)]
+        verbose: bool,
+    },
 }
 
 #[tokio::main]
@@ -256,6 +275,14 @@ async fn main() {
                 eprintln!("Error: {}", err);
                 std::process::exit(1);
             }
+        }
+        Commands::Watch {
+            path,
+            db,
+            debounce,
+            verbose,
+        } => {
+            watch::run_watch(&path, &db, debounce, verbose);
         }
     }
 }
@@ -412,6 +439,26 @@ mod tests {
                 assert_eq!(db, PathBuf::from("test_db.lbug"));
             }
             _ => panic!("Expected Repl variant"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parsing_watch() {
+        let args = vec!["synapse", "watch", ".", "--debounce", "3", "-v"];
+        let parsed = Cli::try_parse_from(args).unwrap();
+        match parsed.command {
+            Commands::Watch {
+                path,
+                db,
+                debounce,
+                verbose,
+            } => {
+                assert_eq!(path, PathBuf::from("."));
+                assert_eq!(db, PathBuf::from("synapse.lbug"));
+                assert_eq!(debounce, 3);
+                assert!(verbose);
+            }
+            _ => panic!("Expected Watch variant"),
         }
     }
 }

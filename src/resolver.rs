@@ -86,22 +86,43 @@ pub fn resolve_imports(files: &[FileRecord]) -> Vec<(String, String)> {
                             }
                         }
 
-                        if start_idx < segments.len() {
-                            let mod_name = segments[start_idx];
+                        let mut last_resolved: Option<PathBuf> = None;
+                        let mut current_base = resolved_base_dir;
 
-                            let search_paths = vec![
-                                resolved_base_dir.join(format!("{}.rs", mod_name)),
-                                resolved_base_dir.join(mod_name).join("mod.rs"),
-                            ];
+                        for seg in segments.iter().skip(start_idx) {
 
-                            for p in search_paths {
-                                let p_normalized = normalize_path(&p);
-                                let p_str = p_normalized.to_string_lossy().to_string();
-                                if file_paths.contains_key(&p_str) {
-                                    edges.insert((file.path.clone(), p_str));
-                                    break;
+                            let candidate_rs = current_base.join(format!("{}.rs", seg));
+                            let candidate_mod = current_base.join(seg).join("mod.rs");
+
+                            let norm_rs = normalize_path(&candidate_rs);
+                            let norm_mod = normalize_path(&candidate_mod);
+
+                            let found = if file_paths.contains_key(
+                                &norm_rs.to_string_lossy().to_string(),
+                            ) {
+                                Some(norm_rs)
+                            } else if file_paths.contains_key(
+                                &norm_mod.to_string_lossy().to_string(),
+                            ) {
+                                Some(norm_mod)
+                            } else {
+                                None
+                            };
+
+                            match found {
+                                Some(resolved_path) => {
+                                    last_resolved = Some(resolved_path.clone());
+                                    current_base = current_base.join(seg);
                                 }
+                                None => break,
                             }
+                        }
+
+                        if let Some(resolved) = last_resolved {
+                            edges.insert((
+                                file.path.clone(),
+                                resolved.to_string_lossy().to_string(),
+                            ));
                         }
                     }
                 }
@@ -331,6 +352,71 @@ mod tests {
             let files = vec![file_record("src/main.rs", "not json")];
             let edges = resolve_imports(&files);
             assert!(edges.is_empty());
+        }
+
+        #[test]
+        fn rust_multi_segment_resolves_to_last_file() {
+            let files = vec![
+                file_record(
+                    "src/main.rs",
+                    r#"[{"path":"crate::foo::bar::Baz","line":1}]"#,
+                ),
+                file_record("src/foo.rs", "[]"),
+                file_record("src/foo/bar.rs", "[]"),
+            ];
+            let edges = resolve_imports(&files);
+            assert!(
+                edges.contains(&("src/main.rs".to_string(), "src/foo/bar.rs".to_string())),
+                "Should resolve to deepest module. Got: {:?}",
+                edges
+            );
+            assert_eq!(edges.len(), 1);
+        }
+
+        #[test]
+        fn rust_multi_segment_with_mod_rs() {
+            let files = vec![
+                file_record(
+                    "src/main.rs",
+                    r#"[{"path":"crate::a::b::Item","line":1}]"#,
+                ),
+                file_record("src/a.rs", "[]"),
+                file_record("src/a/b/mod.rs", "[]"),
+            ];
+            let edges = resolve_imports(&files);
+            assert!(
+                edges.contains(&("src/main.rs".to_string(), "src/a/b/mod.rs".to_string())),
+                "mod.rs path. Got: {:?}",
+                edges
+            );
+        }
+
+        #[test]
+        fn rust_super_then_deep() {
+            let files = vec![
+                file_record(
+                    "src/nested/child.rs",
+                    r#"[{"path":"super::other::util::Util","line":1}]"#,
+                ),
+                file_record("src/other.rs", "[]"),
+                file_record("src/other/util.rs", "[]"),
+            ];
+            let edges = resolve_imports(&files);
+            assert!(
+                edges.contains(&("src/nested/child.rs".to_string(), "src/other/util.rs".to_string())),
+                "super then deep. Got: {:?}",
+                edges
+            );
+        }
+
+        #[test]
+        fn rust_single_segment_regression() {
+            let files = vec![
+                file_record("src/main.rs", r#"[{"path":"crate::parser","line":1}]"#),
+                file_record("src/parser.rs", "[]"),
+            ];
+            let edges = resolve_imports(&files);
+            assert!(edges.contains(&("src/main.rs".to_string(), "src/parser.rs".to_string())));
         }
     }
 

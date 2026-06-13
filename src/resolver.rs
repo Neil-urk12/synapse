@@ -90,7 +90,6 @@ pub fn resolve_imports(files: &[FileRecord]) -> Vec<(String, String)> {
                         let mut current_base = resolved_base_dir;
 
                         for seg in segments.iter().skip(start_idx) {
-
                             let candidate_rs = current_base.join(format!("{}.rs", seg));
                             let candidate_mod = current_base.join(seg).join("mod.rs");
 

@@ -33,6 +33,9 @@ tree-sitter-c = "0.21"
 tree-sitter-cpp = "0.21"
 tree-sitter-java = "0.21"
 tree-sitter-kotlin = "0.3.8"
+tree-sitter-ruby = "0.21.0"
+tree-sitter-php = "0.22.8"
+tree-sitter-swift = "0.5.0"
 
 # LadybugDB connector (Prepared for Phase 2)
 lbug = "0.17"

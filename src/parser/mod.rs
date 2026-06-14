@@ -2,8 +2,11 @@ pub mod cpp;
 pub mod go;
 pub mod java_kotlin;
 pub mod javascript;
+pub mod php;
 pub mod python;
+pub mod ruby;
 pub mod rust;
+pub mod swift;
 
 use crate::types::ast::{EdgeData, FileAnalysis, NodeData, RawCall, RawImport};
 use std::path::Path;
@@ -20,6 +23,9 @@ pub enum Language {
     Python(python::PythonParser),
     Cpp(cpp::CppParser),
     JavaKotlin(java_kotlin::JavaKotlinParser),
+    Ruby(ruby::RubyParser),
+    Php(php::PhpParser),
+    Swift(swift::SwiftParser),
 }
 
 impl Language {
@@ -31,6 +37,9 @@ impl Language {
             Language::Python(p) => p.parse(content, file_path),
             Language::Cpp(p) => p.parse(content, file_path),
             Language::JavaKotlin(p) => p.parse(content, file_path),
+            Language::Ruby(p) => p.parse(content, file_path),
+            Language::Php(p) => p.parse(content, file_path),
+            Language::Swift(p) => p.parse(content, file_path),
         }
     }
 }
@@ -45,6 +54,9 @@ fn language_from_ext(ext: &str) -> Option<Language> {
         "c" => Some(Language::Cpp(cpp::CppParser)),
         "java" => Some(Language::JavaKotlin(java_kotlin::JavaKotlinParser)),
         "kt" | "kts" => Some(Language::JavaKotlin(java_kotlin::JavaKotlinParser)),
+        "rb" => Some(Language::Ruby(ruby::RubyParser)),
+        "php" => Some(Language::Php(php::PhpParser)),
+        "swift" => Some(Language::Swift(swift::SwiftParser)),
         _ => None,
     }
 }

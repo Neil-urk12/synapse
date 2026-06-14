@@ -5,7 +5,7 @@ Synapse is a high-performance code intelligence graph database and indexer built
 ## Features
 
 - **Fast & Incremental**: Parallel workspace traversal respecting `.gitignore`, using SHA-256 hashing to skip unchanged files.
-- **Multi-Language AST Parsing**: Extracts declarations from 8 language families using tree-sitter: Rust, JavaScript/JSX, TypeScript/TSX, Go, Python, C/C++, Java, Kotlin.
+- **Multi-Language AST Parsing**: Extracts declarations from 11 language families using tree-sitter: Rust, JavaScript/JSX, TypeScript/TSX, Go, Python, C/C++, Java, Kotlin, Ruby, PHP, Swift.
 - **Graph Linking**: Resolves module imports (`IMPORTS`) and call sites (`CALLS`) into a global code graph.
 - **Semantic Search**: Computes vector embeddings (BGE-small-en-v1.5, 384-dim) over code chunks for natural-language similarity search.
 - **Code Chunking**: Segments code by symbol boundaries or sliding windows to prepare for embeddings.

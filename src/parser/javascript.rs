@@ -124,8 +124,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                     }
                 } else if func_node.kind() == "member_expression" {
                     if let Some(prop_node) = func_node.child_by_field_name("property") {
-                        let method_name =
-                            prop_node.utf8_text(ctx.source).unwrap_or("").to_owned();
+                        let method_name = prop_node.utf8_text(ctx.source).unwrap_or("").to_owned();
                         let is_valid = !method_name.is_empty()
                             && method_name
                                 .chars()
@@ -192,10 +191,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                 signature,
             });
 
-            let from_id = active_parent
-                .as_deref()
-                .unwrap_or(ctx.file_path)
-                .to_owned();
+            let from_id = active_parent.as_deref().unwrap_or(ctx.file_path).to_owned();
             ctx.edges.push(EdgeData {
                 from_id,
                 to_id: symbol_id.clone(),

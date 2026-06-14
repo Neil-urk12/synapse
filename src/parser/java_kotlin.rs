@@ -140,10 +140,7 @@ fn traverse_java(node: Node, ctx: &mut TraverseContext, current_parent_id: Optio
                 signature,
             });
 
-            let from_id = active_parent
-                .as_deref()
-                .unwrap_or(ctx.file_path)
-                .to_owned();
+            let from_id = active_parent.as_deref().unwrap_or(ctx.file_path).to_owned();
             ctx.edges.push(EdgeData {
                 from_id,
                 to_id: symbol_id.clone(),
@@ -186,10 +183,7 @@ fn traverse_java(node: Node, ctx: &mut TraverseContext, current_parent_id: Optio
                 signature,
             });
 
-            let from_id = active_parent
-                .as_deref()
-                .unwrap_or(ctx.file_path)
-                .to_owned();
+            let from_id = active_parent.as_deref().unwrap_or(ctx.file_path).to_owned();
             ctx.edges.push(EdgeData {
                 from_id,
                 to_id: symbol_id.clone(),
@@ -335,10 +329,7 @@ fn traverse_kotlin(node: Node, ctx: &mut TraverseContext, current_parent_id: Opt
                 signature,
             });
 
-            let from_id = active_parent
-                .as_deref()
-                .unwrap_or(ctx.file_path)
-                .to_owned();
+            let from_id = active_parent.as_deref().unwrap_or(ctx.file_path).to_owned();
             ctx.edges.push(EdgeData {
                 from_id,
                 to_id: symbol_id.clone(),
@@ -394,10 +385,7 @@ fn traverse_kotlin(node: Node, ctx: &mut TraverseContext, current_parent_id: Opt
                 signature,
             });
 
-            let from_id = active_parent
-                .as_deref()
-                .unwrap_or(ctx.file_path)
-                .to_owned();
+            let from_id = active_parent.as_deref().unwrap_or(ctx.file_path).to_owned();
             ctx.edges.push(EdgeData {
                 from_id,
                 to_id: symbol_id.clone(),

@@ -86,8 +86,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                 let mut name = func_node.utf8_text(ctx.source).unwrap_or("").to_owned();
                 if func_node.kind() == "field_expression" {
                     if let Some(field_node) = func_node.child_by_field_name("field") {
-                        let method_name =
-                            field_node.utf8_text(ctx.source).unwrap_or("").to_owned();
+                        let method_name = field_node.utf8_text(ctx.source).unwrap_or("").to_owned();
                         let is_valid = !method_name.is_empty()
                             && method_name.chars().all(|c| c.is_alphanumeric() || c == '_');
                         if is_valid {
@@ -124,8 +123,8 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                             name = last_segment.to_owned();
                         }
                     }
-                    let is_valid = !name.is_empty()
-                        && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+                    let is_valid =
+                        !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
                     if is_valid {
                         ctx.calls.push(RawCall {
                             name,
@@ -171,10 +170,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                 signature,
             });
 
-            let from_id = active_parent
-                .as_deref()
-                .unwrap_or(ctx.file_path)
-                .to_owned();
+            let from_id = active_parent.as_deref().unwrap_or(ctx.file_path).to_owned();
             ctx.edges.push(EdgeData {
                 from_id,
                 to_id: symbol_id.clone(),
@@ -199,16 +195,12 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                                     let class_part = &qual_text[..ns_sep_idx];
                                     let method_part = &qual_text[ns_sep_idx + 2..];
                                     name = method_part.to_owned();
-                                    go_parent =
-                                        Some(format!("{}::{}", ctx.file_path, class_part));
+                                    go_parent = Some(format!("{}::{}", ctx.file_path, class_part));
                                 } else {
                                     name = qual_text.to_owned();
                                 }
                             } else {
-                                name = decl
-                                    .utf8_text(ctx.source)
-                                    .unwrap_or("anonymous")
-                                    .to_owned();
+                                name = decl.utf8_text(ctx.source).unwrap_or("anonymous").to_owned();
                             }
                         }
                         break;

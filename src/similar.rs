@@ -12,10 +12,7 @@ pub struct ScoredChunk {
 
 /// Extract ScoredChunks from a query result, converting distance to similarity.
 /// Filters by threshold — chunks below the threshold are excluded.
-pub fn scored_chunks_from_result(
-    result: lbug::QueryResult,
-    threshold: f32,
-) -> Vec<ScoredChunk> {
+pub fn scored_chunks_from_result(result: lbug::QueryResult, threshold: f32) -> Vec<ScoredChunk> {
     let mut scored = Vec::new();
     for row in result {
         let id = match row.first() {

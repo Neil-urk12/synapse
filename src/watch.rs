@@ -84,9 +84,7 @@ pub fn run_watch(path: &Path, db_path: &Path, debounce_secs: u64, verbose: bool)
     })
     .expect("Bug: Failed to set Ctrl-C handler");
 
-    let workspace_root = path
-        .canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf());
+    let workspace_root = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let db_name = db_path
         .file_name()
         .and_then(|n| n.to_str())
@@ -154,9 +152,7 @@ pub fn run_watch(path: &Path, db_path: &Path, debounce_secs: u64, verbose: bool)
                         pending.len()
                     );
                 }
-                if let Err(err) =
-                    process_batch(&conn, &workspace_root, &pending, verbose)
-                {
+                if let Err(err) = process_batch(&conn, &workspace_root, &pending, verbose) {
                     eprintln!("Warning: Batch processing error: {}", err);
                 }
                 if verbose {
@@ -166,11 +162,7 @@ pub fn run_watch(path: &Path, db_path: &Path, debounce_secs: u64, verbose: bool)
                     eprintln!("Warning: Linker error: {}", err);
                 }
                 if !verbose {
-                    println!(
-                        "  Updated {} files (batch #{})",
-                        pending.len(),
-                        batch_count
-                    );
+                    println!("  Updated {} files (batch #{})", pending.len(), batch_count);
                 }
                 pending.clear();
             }
@@ -194,8 +186,21 @@ fn should_watch(path: &Path, db_name: &str) -> bool {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     matches!(
         ext,
-        "rs" | "js" | "jsx" | "ts" | "tsx" | "go" | "py" | "c" | "cpp" | "cc" | "cxx" | "h"
-            | "hpp" | "java" | "kt" | "kts"
+        "rs" | "js"
+            | "jsx"
+            | "ts"
+            | "tsx"
+            | "go"
+            | "py"
+            | "c"
+            | "cpp"
+            | "cc"
+            | "cxx"
+            | "h"
+            | "hpp"
+            | "java"
+            | "kt"
+            | "kts"
     )
 }
 
@@ -316,9 +321,7 @@ fn process_batch(
             containment_symbol: &mut containment_symbol,
         };
 
-        if let Err(err) =
-            crate::index::write_payload_to_db(conn, payload, &mut stmts, verbose)
-        {
+        if let Err(err) = crate::index::write_payload_to_db(conn, payload, &mut stmts, verbose) {
             eprintln!("Warning: Failed to index '{}': {}", relative_path, err);
         } else if verbose {
             println!("  Indexed: {}", relative_path);
@@ -342,8 +345,7 @@ mod tests {
     #[test]
     fn test_should_watch_supported_extensions() {
         let exts = [
-            "rs", "js", "jsx", "ts", "tsx", "go", "py", "c", "cpp", "h", "hpp", "java", "kt",
-            "kts",
+            "rs", "js", "jsx", "ts", "tsx", "go", "py", "c", "cpp", "h", "hpp", "java", "kt", "kts",
         ];
         for ext in &exts {
             let filename = format!("/tmp/test.{}", ext);
@@ -396,31 +398,21 @@ mod tests {
 
     #[test]
     fn test_get_cached_hash_empty_db_returns_none() {
-        let db_path = Path::new("test_get_cached_hash_empty_unique.lbug");
-        if db_path.exists() {
-            let _ = std::fs::remove_dir_all(db_path);
-        }
-        let db = lbug::Database::new(db_path, lbug::SystemConfig::default()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let db = lbug::Database::new(tmp.path().join("test.lbug"), lbug::SystemConfig::default())
+            .unwrap();
         let conn = lbug::Connection::new(&db).unwrap();
         crate::schema::init_schema(&conn).unwrap();
 
         let result = get_cached_hash(&conn, "nonexistent.rs").unwrap();
         assert!(result.is_none());
-
-        drop(conn);
-        drop(db);
-        if db_path.exists() {
-            let _ = std::fs::remove_dir_all(db_path);
-        }
     }
 
     #[test]
     fn test_get_cached_hash_finds_existing_hash() {
-        let db_path = Path::new("test_get_cached_hash_finds_unique.lbug");
-        if db_path.exists() {
-            let _ = std::fs::remove_dir_all(db_path);
-        }
-        let db = lbug::Database::new(db_path, lbug::SystemConfig::default()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let db = lbug::Database::new(tmp.path().join("test.lbug"), lbug::SystemConfig::default())
+            .unwrap();
         let conn = lbug::Connection::new(&db).unwrap();
         crate::schema::init_schema(&conn).unwrap();
 
@@ -442,23 +434,15 @@ mod tests {
 
         let result = get_cached_hash(&conn, "src/main.rs").unwrap();
         assert_eq!(result, Some("abc123".to_string()));
-
-        drop(conn);
-        drop(db);
-        if db_path.exists() {
-            let _ = std::fs::remove_dir_all(db_path);
-        }
     }
 
     // --- process_remove tests ---
 
     #[test]
     fn test_process_remove_removes_existing_file() {
-        let db_path = Path::new("test_process_remove_existing_unique.lbug");
-        if db_path.exists() {
-            let _ = std::fs::remove_dir_all(db_path);
-        }
-        let db = lbug::Database::new(db_path, lbug::SystemConfig::default()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let db = lbug::Database::new(tmp.path().join("test.lbug"), lbug::SystemConfig::default())
+            .unwrap();
         let conn = lbug::Connection::new(&db).unwrap();
         crate::schema::init_schema(&conn).unwrap();
 
@@ -483,54 +467,35 @@ mod tests {
 
         // Verify it's gone
         assert!(get_cached_hash(&conn, "gone.rs").unwrap().is_none());
-
-        drop(conn);
-        drop(db);
-        if db_path.exists() {
-            let _ = std::fs::remove_dir_all(db_path);
-        }
     }
 
     #[test]
     fn test_process_remove_non_existent_is_noop() {
-        let db_path = Path::new("test_process_remove_noop_unique.lbug");
-        if db_path.exists() {
-            let _ = std::fs::remove_dir_all(db_path);
-        }
-        let db = lbug::Database::new(db_path, lbug::SystemConfig::default()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let db = lbug::Database::new(tmp.path().join("test.lbug"), lbug::SystemConfig::default())
+            .unwrap();
         let conn = lbug::Connection::new(&db).unwrap();
         crate::schema::init_schema(&conn).unwrap();
 
         // Removing non-existent file should not error
         process_remove(&conn, "nonexistent.rs").unwrap();
-
-        drop(conn);
-        drop(db);
-        if db_path.exists() {
-            let _ = std::fs::remove_dir_all(db_path);
-        }
     }
 
     // --- process_batch tests ---
 
     #[test]
     fn test_process_batch_indexes_new_rs_file() {
-        let db_name = "test_process_batch_new_rs_unique";
-        let db_filename = format!("{}.lbug", db_name);
-        let db_path = Path::new(&db_filename);
-        if db_path.exists() {
-            let _ = std::fs::remove_dir_all(db_path);
-        }
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.lbug");
 
         // Create temp workspace with a rust file
-        let dir = std::env::temp_dir().join(db_name);
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = tmp.path().join("workspace");
         std::fs::create_dir_all(&dir).unwrap();
         let file_path = dir.join("hello.rs");
         std::fs::write(&file_path, b"fn greet() -> &str { \"hi\" }").unwrap();
 
         // Setup DB
-        let db = lbug::Database::new(db_path, lbug::SystemConfig::default()).unwrap();
+        let db = lbug::Database::new(&db_path, lbug::SystemConfig::default()).unwrap();
         let conn = lbug::Connection::new(&db).unwrap();
         crate::schema::init_schema(&conn).unwrap();
 
@@ -538,43 +503,26 @@ mod tests {
         paths.insert(file_path.clone());
 
         let result = process_batch(&conn, &dir, &paths, false);
-        assert!(
-            result.is_ok(),
-            "process_batch failed: {:?}",
-            result.err()
-        );
+        assert!(result.is_ok(), "process_batch failed: {:?}", result.err());
 
         // Verify file was indexed
         let hash = get_cached_hash(&conn, "hello.rs").unwrap();
         assert!(hash.is_some(), "file should have been indexed");
-
-        // Cleanup
-        drop(conn);
-        drop(db);
-        let _ = std::fs::remove_dir_all(&dir);
-        if db_path.exists() {
-            let _ = std::fs::remove_dir_all(db_path);
-        }
     }
 
     #[test]
     fn test_process_batch_skips_unchanged_file() {
-        let db_name = "test_process_batch_skip_unchanged_unique";
-        let db_filename = format!("{}.lbug", db_name);
-        let db_path = Path::new(&db_filename);
-        if db_path.exists() {
-            let _ = std::fs::remove_dir_all(db_path);
-        }
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.lbug");
 
         // Create temp workspace
-        let dir = std::env::temp_dir().join(db_name);
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = tmp.path().join("workspace");
         std::fs::create_dir_all(&dir).unwrap();
         let file_path = dir.join("main.rs");
         std::fs::write(&file_path, b"fn main() {}").unwrap();
 
         // Setup DB
-        let db = lbug::Database::new(db_path, lbug::SystemConfig::default()).unwrap();
+        let db = lbug::Database::new(&db_path, lbug::SystemConfig::default()).unwrap();
         let conn = lbug::Connection::new(&db).unwrap();
         crate::schema::init_schema(&conn).unwrap();
 
@@ -594,34 +542,21 @@ mod tests {
         // Hash should be same (file not re-processed)
         let hash_after_second = get_cached_hash(&conn, "main.rs").unwrap().unwrap();
         assert_eq!(hash_after_first, hash_after_second);
-
-        // Cleanup
-        drop(conn);
-        drop(db);
-        let _ = std::fs::remove_dir_all(&dir);
-        if db_path.exists() {
-            let _ = std::fs::remove_dir_all(db_path);
-        }
     }
 
     #[test]
     fn test_process_batch_handles_deleted_file() {
-        let db_name = "test_process_batch_deleted_unique";
-        let db_filename = format!("{}.lbug", db_name);
-        let db_path = Path::new(&db_filename);
-        if db_path.exists() {
-            let _ = std::fs::remove_dir_all(db_path);
-        }
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.lbug");
 
         // Create temp workspace
-        let dir = std::env::temp_dir().join(db_name);
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = tmp.path().join("workspace");
         std::fs::create_dir_all(&dir).unwrap();
         let file_path = dir.join("temp.rs");
         std::fs::write(&file_path, b"fn temp() {}").unwrap();
 
         // Setup DB
-        let db = lbug::Database::new(db_path, lbug::SystemConfig::default()).unwrap();
+        let db = lbug::Database::new(&db_path, lbug::SystemConfig::default()).unwrap();
         let conn = lbug::Connection::new(&db).unwrap();
         crate::schema::init_schema(&conn).unwrap();
 
@@ -639,34 +574,21 @@ mod tests {
 
         // File should be removed from DB
         assert!(get_cached_hash(&conn, "temp.rs").unwrap().is_none());
-
-        // Cleanup
-        drop(conn);
-        drop(db);
-        let _ = std::fs::remove_dir_all(&dir);
-        if db_path.exists() {
-            let _ = std::fs::remove_dir_all(db_path);
-        }
     }
 
     #[test]
     fn test_process_batch_re_indexes_changed_file() {
-        let db_name = "test_process_batch_reindex_unique";
-        let db_filename = format!("{}.lbug", db_name);
-        let db_path = Path::new(&db_filename);
-        if db_path.exists() {
-            let _ = std::fs::remove_dir_all(db_path);
-        }
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.lbug");
 
         // Create temp workspace
-        let dir = std::env::temp_dir().join(db_name);
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = tmp.path().join("workspace");
         std::fs::create_dir_all(&dir).unwrap();
         let file_path = dir.join("lib.rs");
         std::fs::write(&file_path, b"fn old() {}").unwrap();
 
         // Setup DB
-        let db = lbug::Database::new(db_path, lbug::SystemConfig::default()).unwrap();
+        let db = lbug::Database::new(&db_path, lbug::SystemConfig::default()).unwrap();
         let conn = lbug::Connection::new(&db).unwrap();
         crate::schema::init_schema(&conn).unwrap();
 
@@ -687,13 +609,5 @@ mod tests {
 
         // Hash should have changed
         assert_ne!(hash_old, hash_new);
-
-        // Cleanup
-        drop(conn);
-        drop(db);
-        let _ = std::fs::remove_dir_all(&dir);
-        if db_path.exists() {
-            let _ = std::fs::remove_dir_all(db_path);
-        }
     }
 }

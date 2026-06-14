@@ -400,18 +400,11 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
 mod tests {
     use super::*;
     use lbug::{Connection, Database};
-    use std::path::Path;
 
-    fn with_write_payload_db(
-        test_name: &str,
-        f: impl FnOnce(&Connection, &mut PreparedStatements),
-    ) {
-        let name = format!("test_{}.lbug", test_name);
-        let db_path = Path::new(&name);
-        if db_path.exists() {
-            let _ = std::fs::remove_dir_all(db_path);
-        }
-        let db = Database::new(db_path, SystemConfig::default()).unwrap();
+    fn with_write_payload_db(f: impl FnOnce(&Connection, &mut PreparedStatements)) {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.lbug");
+        let db = Database::new(&db_path, SystemConfig::default()).unwrap();
         let conn = Connection::new(&db).unwrap();
         schema::init_schema(&conn).unwrap();
 
@@ -444,39 +437,24 @@ mod tests {
         };
 
         f(&conn, &mut stmts);
-
-        drop(conn);
-        drop(db);
-        if db_path.exists() {
-            let _ = std::fs::remove_dir_all(db_path);
-        }
     }
 
     #[test]
     fn test_load_all_hashes_empty() {
-        let db_path = Path::new("test_load_empty_hashes_unique.lbug");
-        if db_path.exists() {
-            let _ = std::fs::remove_dir_all(db_path);
-        }
-        let db = Database::new(db_path, SystemConfig::default()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.lbug");
+        let db = Database::new(&db_path, SystemConfig::default()).unwrap();
         let conn = Connection::new(&db).unwrap();
         schema::init_schema(&conn).unwrap();
         let res = load_all_hashes(&conn).unwrap();
         assert!(res.is_empty());
-        drop(conn);
-        drop(db);
-        if db_path.exists() {
-            let _ = std::fs::remove_dir_all(db_path);
-        }
     }
 
     #[test]
     fn test_load_all_hashes_returns_empty_on_error() {
-        let db_path = Path::new("test_load_hashes_error_unique.lbug");
-        if db_path.exists() {
-            let _ = std::fs::remove_dir_all(db_path);
-        }
-        let db = Database::new(db_path, SystemConfig::default()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.lbug");
+        let db = Database::new(&db_path, SystemConfig::default()).unwrap();
         let conn = Connection::new(&db).unwrap();
         // No schema init — File table doesn't exist
         let result = load_all_hashes(&conn);
@@ -484,16 +462,11 @@ mod tests {
             result.is_err(),
             "Expected error when File table missing, got Ok"
         );
-        drop(conn);
-        drop(db);
-        if db_path.exists() {
-            let _ = std::fs::remove_dir_all(db_path);
-        }
     }
 
     #[test]
     fn test_write_payload_to_db_compiles() {
-        with_write_payload_db("write_payload_compiles", |conn, stmts| {
+        with_write_payload_db(|conn, stmts| {
             let payload = ParsedPayload {
                 relative_path: "src/dummy.rs".to_string(),
                 language: "Rust".to_string(),
@@ -504,23 +477,21 @@ mod tests {
             };
             let res = write_payload_to_db(conn, payload, stmts, false);
             assert!(res.is_ok());
-            {
-                let mut stmt = conn
-                    .prepare("MATCH (f:File {path: 'src/dummy.rs'}) RETURN f.hash")
-                    .unwrap();
-                let mut result = conn.execute(&mut stmt, vec![]).unwrap();
-                let row = result.next().unwrap();
-                assert_eq!(
-                    row.first().unwrap(),
-                    &Value::String("dummyhash".to_string())
-                );
-            }
+            let mut stmt = conn
+                .prepare("MATCH (f:File {path: 'src/dummy.rs'}) RETURN f.hash")
+                .unwrap();
+            let mut result = conn.execute(&mut stmt, vec![]).unwrap();
+            let row = result.next().unwrap();
+            assert_eq!(
+                row.first().unwrap(),
+                &Value::String("dummyhash".to_string())
+            );
         });
     }
 
     #[test]
     fn test_write_payload_raw_imports_defaults_to_empty_array() {
-        with_write_payload_db("write_payload_raw_imports", |conn, stmts| {
+        with_write_payload_db(|conn, stmts| {
             let payload = ParsedPayload {
                 relative_path: "src/no_analysis.rs".to_string(),
                 language: "Rust".to_string(),
@@ -531,14 +502,12 @@ mod tests {
             };
             let res = write_payload_to_db(conn, payload, stmts, false);
             assert!(res.is_ok());
-            {
-                let mut stmt = conn
-                    .prepare("MATCH (f:File {path: 'src/no_analysis.rs'}) RETURN f.raw_imports")
-                    .unwrap();
-                let mut result = conn.execute(&mut stmt, vec![]).unwrap();
-                let row = result.next().unwrap();
-                assert_eq!(row.first().unwrap(), &Value::String("[]".to_string()));
-            }
+            let mut stmt = conn
+                .prepare("MATCH (f:File {path: 'src/no_analysis.rs'}) RETURN f.raw_imports")
+                .unwrap();
+            let mut result = conn.execute(&mut stmt, vec![]).unwrap();
+            let row = result.next().unwrap();
+            assert_eq!(row.first().unwrap(), &Value::String("[]".to_string()));
         });
     }
 }

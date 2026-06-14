@@ -132,9 +132,12 @@ mod tests {
 
         conn.query("CREATE NODE TABLE File(path STRING, language STRING, file_size INT64, hash STRING, raw_imports STRING, PRIMARY KEY(path))").unwrap();
         conn.query("CREATE NODE TABLE Symbol(id STRING, name STRING, kind STRING, start_line INT64, start_col INT64, end_line INT64, signature STRING, raw_calls STRING, PRIMARY KEY(id))").unwrap();
-        conn.query("CREATE REL TABLE CONTAINS(FROM File TO Symbol, FROM Symbol TO Symbol)").unwrap();
-        conn.query("CREATE REL TABLE IMPORTS(FROM File TO File)").unwrap();
-        conn.query("CREATE REL TABLE CALLS(FROM Symbol TO Symbol, call_site_line INT64)").unwrap();
+        conn.query("CREATE REL TABLE CONTAINS(FROM File TO Symbol, FROM Symbol TO Symbol)")
+            .unwrap();
+        conn.query("CREATE REL TABLE IMPORTS(FROM File TO File)")
+            .unwrap();
+        conn.query("CREATE REL TABLE CALLS(FROM Symbol TO Symbol, call_site_line INT64)")
+            .unwrap();
 
         conn.query("CREATE (:File {path: 'src/main.rs', language: 'Rust', file_size: 100, hash: 'h1', raw_imports: '[]'})").unwrap();
         conn.query("CREATE (:File {path: 'src/parser.rs', language: 'Rust', file_size: 150, hash: 'h2', raw_imports: '[]'})").unwrap();

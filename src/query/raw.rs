@@ -45,10 +45,8 @@ mod tests {
         }
         let db = Database::new(db_path, SystemConfig::default()).unwrap();
         let conn = Connection::new(&db).unwrap();
-        conn.query(
-            "CREATE NODE TABLE T(id INT64, name STRING, PRIMARY KEY(id))",
-        )
-        .unwrap();
+        conn.query("CREATE NODE TABLE T(id INT64, name STRING, PRIMARY KEY(id))")
+            .unwrap();
         conn.query("CREATE (:T {id: 101, name: 'Indexer'})")
             .unwrap();
 

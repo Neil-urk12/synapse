@@ -168,5 +168,3 @@ pub fn handle_embed(
     }
     Ok(())
 }
-
-

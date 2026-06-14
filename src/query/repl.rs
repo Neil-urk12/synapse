@@ -1,8 +1,8 @@
-use crate::query::raw::run_query_internal;
-use crate::query::callers::run_callers_internal;
 use crate::query::callees::run_callees_internal;
-use crate::query::dependencies::run_dependencies_internal;
+use crate::query::callers::run_callers_internal;
 use crate::query::context::run_context_internal;
+use crate::query::dependencies::run_dependencies_internal;
+use crate::query::raw::run_query_internal;
 use lbug::{Connection, Database, SystemConfig};
 use std::path::Path;
 
@@ -83,10 +83,22 @@ pub fn handle_repl_command(
             ".help" => {
                 writeln!(writer, "Synapse REPL Shortcuts:")?;
                 writeln!(writer, "  .help                    Show this help message")?;
-                writeln!(writer, "  .callers <symbol>        Find all callers of a symbol")?;
-                writeln!(writer, "  .callees <symbol>        Find all callees of a symbol")?;
-                writeln!(writer, "  .deps <file>             List dependencies for a file")?;
-                writeln!(writer, "  .context <symbol/file>   Get code context (exact search)")?;
+                writeln!(
+                    writer,
+                    "  .callers <symbol>        Find all callers of a symbol"
+                )?;
+                writeln!(
+                    writer,
+                    "  .callees <symbol>        Find all callees of a symbol"
+                )?;
+                writeln!(
+                    writer,
+                    "  .deps <file>             List dependencies for a file"
+                )?;
+                writeln!(
+                    writer,
+                    "  .context <symbol/file>   Get code context (exact search)"
+                )?;
                 writeln!(writer, "  .exit / .quit            Exit the REPL")?;
             }
             ".callers" => {
@@ -127,11 +139,23 @@ pub fn handle_repl_command(
             }
             ".context" => {
                 if parts.len() < 2 {
-                    writeln!(writer, "Error: Missing target. Usage: .context <symbol/file>")?;
+                    writeln!(
+                        writer,
+                        "Error: Missing target. Usage: .context <symbol/file>"
+                    )?;
                 } else {
                     let target = parts[1..].join(" ");
-                    if let Err(e) = run_context_internal(conn, Some(&target), None, false, "markdown", writer) {
-                        if let Err(e2) = run_context_internal(conn, None, Some(&target), false, "markdown", writer) {
+                    if let Err(e) =
+                        run_context_internal(conn, Some(&target), None, false, "markdown", writer)
+                    {
+                        if let Err(e2) = run_context_internal(
+                            conn,
+                            None,
+                            Some(&target),
+                            false,
+                            "markdown",
+                            writer,
+                        ) {
                             writeln!(writer, "Error running .context (symbol): {}", e)?;
                             writeln!(writer, "Error running .context (file): {}", e2)?;
                         }
@@ -139,7 +163,11 @@ pub fn handle_repl_command(
                 }
             }
             _ => {
-                writeln!(writer, "Error: Unknown shortcut command '{}'. Type '.help' for commands.", cmd)?;
+                writeln!(
+                    writer,
+                    "Error: Unknown shortcut command '{}'. Type '.help' for commands.",
+                    cmd
+                )?;
             }
         }
     } else {

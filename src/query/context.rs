@@ -1,4 +1,6 @@
-use crate::query::db::{fetch_callees, fetch_callers, fetch_contained_symbols, fetch_imported_by, fetch_imports};
+use crate::query::db::{
+    fetch_callees, fetch_callers, fetch_contained_symbols, fetch_imported_by, fetch_imports,
+};
 use crate::types::query::{ContextPayload, FileInfo, SymbolInfo};
 use lbug::{Connection, Database, SystemConfig, Value};
 use std::path::Path;
@@ -15,7 +17,8 @@ pub fn run_context_internal(
         return Err(format!(
             "Invalid output format '{}'. Supported formats are: markdown, json",
             format
-        ).into());
+        )
+        .into());
     }
     if symbol_name.is_some() && file_path.is_some() {
         return Err("Options --symbol and --file are mutually exclusive".into());
@@ -124,7 +127,10 @@ pub fn run_context_internal(
             for c in &candidates {
                 eprintln!("  - {}", c.path);
             }
-            eprintln!("Showing details for the first match: {}", candidates[0].path);
+            eprintln!(
+                "Showing details for the first match: {}",
+                candidates[0].path
+            );
         }
         target_file = Some(candidates[0].clone());
     }
@@ -184,7 +190,11 @@ pub fn run_context_internal(
             writeln!(writer, "# Context: {} ({})", sym.id, sym.kind)?;
             writeln!(writer, "\n## Signature\n`{}`", sym.signature)?;
             if let Some(ref p) = file_path_to_read {
-                writeln!(writer, "\n## Source Code ({}:{}-{})", p, sym.start_line, sym.end_line)?;
+                writeln!(
+                    writer,
+                    "\n## Source Code ({}:{}-{})",
+                    p, sym.start_line, sym.end_line
+                )?;
                 let syntax = if p.ends_with(".rs") {
                     "rust"
                 } else if p.ends_with(".js") || p.ends_with(".jsx") {
@@ -216,13 +226,21 @@ pub fn run_context_internal(
             if !payload.callers.is_empty() {
                 writeln!(writer, "### Callers")?;
                 for caller in &payload.callers {
-                    writeln!(writer, "* `{}` (kind: {}, line: {})", caller.id, caller.kind, caller.call_site_line)?;
+                    writeln!(
+                        writer,
+                        "* `{}` (kind: {}, line: {})",
+                        caller.id, caller.kind, caller.call_site_line
+                    )?;
                 }
             }
             if !payload.callees.is_empty() {
                 writeln!(writer, "### Callees")?;
                 for callee in &payload.callees {
-                    writeln!(writer, "* `{}` (kind: {}, line: {})", callee.id, callee.kind, callee.call_site_line)?;
+                    writeln!(
+                        writer,
+                        "* `{}` (kind: {}, line: {})",
+                        callee.id, callee.kind, callee.call_site_line
+                    )?;
                 }
             }
         }
@@ -284,9 +302,12 @@ mod tests {
         let conn = Connection::new(&db).unwrap();
         conn.query("CREATE NODE TABLE File (path STRING, language STRING, file_size INT64, hash STRING, raw_imports STRING, PRIMARY KEY (path))").unwrap();
         conn.query("CREATE NODE TABLE Symbol (id STRING, name STRING, kind STRING, start_line INT64, start_col INT64, end_line INT64, signature STRING, raw_calls STRING, PRIMARY KEY (id))").unwrap();
-        conn.query("CREATE REL TABLE CONTAINS (FROM File TO Symbol, FROM Symbol TO Symbol)").unwrap();
-        conn.query("CREATE REL TABLE IMPORTS (FROM File TO File)").unwrap();
-        conn.query("CREATE REL TABLE CALLS (FROM Symbol TO Symbol, call_site_line INT64)").unwrap();
+        conn.query("CREATE REL TABLE CONTAINS (FROM File TO Symbol, FROM Symbol TO Symbol)")
+            .unwrap();
+        conn.query("CREATE REL TABLE IMPORTS (FROM File TO File)")
+            .unwrap();
+        conn.query("CREATE REL TABLE CALLS (FROM Symbol TO Symbol, call_site_line INT64)")
+            .unwrap();
         conn.query("CREATE (:File {path: 'src/main.rs', language: 'Rust', file_size: 10, hash: 'x', raw_imports: '[]'})").unwrap();
         conn.query("CREATE (:Symbol {id: 'src/main.rs::main', name: 'main', kind: 'Function', start_line: 1, start_col: 1, end_line: 2, signature: 'fn main()', raw_calls: '[]'})").unwrap();
 
@@ -310,7 +331,10 @@ mod tests {
         let mut out_buf = Vec::new();
         let res = run_context_internal(&conn, Some("main"), None, false, "html", &mut out_buf);
         assert!(res.is_err());
-        assert_eq!(res.unwrap_err().to_string(), "Invalid output format 'html'. Supported formats are: markdown, json");
+        assert_eq!(
+            res.unwrap_err().to_string(),
+            "Invalid output format 'html'. Supported formats are: markdown, json"
+        );
         let _ = std::fs::remove_file(db_path);
     }
 }

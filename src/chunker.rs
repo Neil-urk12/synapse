@@ -15,7 +15,8 @@ pub fn chunk_source_with_options(
     if !nodes.is_empty() {
         let mut chunks = Vec::new();
         for (idx, node) in nodes.iter().enumerate() {
-            let text = crate::file_utils::slice_source_code(content, node.start_line, node.end_line);
+            let text =
+                crate::file_utils::slice_source_code(content, node.start_line, node.end_line);
             chunks.push(CodeChunk {
                 id: format!("{}::chunk::{}", path, idx),
                 text,

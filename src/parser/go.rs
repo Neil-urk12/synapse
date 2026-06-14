@@ -80,8 +80,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                 let name = func_node.utf8_text(ctx.source).unwrap_or("").to_owned();
                 if func_node.kind() == "selector_expression" {
                     if let Some(field_node) = func_node.child_by_field_name("field") {
-                        let method_name =
-                            field_node.utf8_text(ctx.source).unwrap_or("").to_owned();
+                        let method_name = field_node.utf8_text(ctx.source).unwrap_or("").to_owned();
                         let is_valid = !method_name.is_empty()
                             && method_name.chars().all(|c| c.is_alphanumeric() || c == '_');
                         if is_valid {
@@ -93,8 +92,8 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                         }
                     }
                 } else {
-                    let is_valid = !name.is_empty()
-                        && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+                    let is_valid =
+                        !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
                     if is_valid {
                         ctx.calls.push(RawCall {
                             name,

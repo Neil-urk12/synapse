@@ -4,12 +4,14 @@ Synapse is a high-performance code intelligence graph database and indexer built
 
 ## Features
 
-- **Fast & Incremental**: Traverses workspaces respecting `.gitignore`, using SHA-256 hashing to skip unchanged files.
-- **AST Parsing**: Multi-language support (Rust, JS/JSX, TS/TSX) using tree-sitter to extract declarations (Functions, Structs, Classes, Methods, Interfaces).
-- **Graph Linking**: Dynamically resolves module imports (`IMPORTS`) and call sites (`CALLS`) to assemble a global code graph.
-- **Code Chunking**: Segments code by symbol boundaries or sliding windows to prepare for semantic vector embeddings.
-- **Interactive REPL**: Shell editor with history and shortcuts for querying callers, callees, dependencies, and code context.
-- **Query CLI**: Direct subcommands to query callers, callees, and file dependencies with support for table, markdown, and JSON outputs.
+- **Fast & Incremental**: Parallel workspace traversal respecting `.gitignore`, using SHA-256 hashing to skip unchanged files.
+- **Multi-Language AST Parsing**: Extracts declarations from 8 language families using tree-sitter: Rust, JavaScript/JSX, TypeScript/TSX, Go, Python, C/C++, Java, Kotlin.
+- **Graph Linking**: Resolves module imports (`IMPORTS`) and call sites (`CALLS`) into a global code graph.
+- **Semantic Search**: Computes vector embeddings (BGE-small-en-v1.5, 384-dim) over code chunks for natural-language similarity search.
+- **Code Chunking**: Segments code by symbol boundaries or sliding windows to prepare for embeddings.
+- **File Watcher**: Watches for file changes and automatically re-indexes with configurable debounce.
+- **Query CLI**: Subcommands for callers, callees, dependencies, context, and raw Cypher queries.
+- **Interactive REPL**: Shell with history, shortcuts, and raw Cypher query support.
 
 ## Quick Start
 
@@ -22,32 +24,63 @@ cargo build
 ### Index Codebase
 
 ```bash
-# Index current directory into default synapse.lbug database
+# Index current directory (default: synapse.lbug)
 cargo run -- index .
 
-# Index custom path with custom DB and verbose logging
-cargo run -- index /path/to/project --db myproj.lbug -v
+# Custom path, custom DB, verbose output
+cargo run -- index /path/to/project -d myproj.lbug -v
 ```
 
-### Direct Queries
+### Query Symbols
 
 ```bash
-# Find callers of a symbol
-cargo run -- callers run_query
+# Find all callers of a symbol
+cargo run -- callers <symbol>
 
-# Find callees of a symbol
-cargo run -- callees handle_repl_command
+# Find all callees of a symbol
+cargo run -- callees <symbol>
 
 # Find file dependencies (imports and imported-by)
-cargo run -- deps src/main.rs
+cargo run -- deps <file>
+
+# Get rich code context for a symbol or file
+cargo run -- context --symbol <symbol>
+cargo run -- context --file <file> --format json
 ```
 
-### Interactive Query Shell (REPL)
+All query commands support `--exact` for exact matching (default is fuzzy) and `--format` for output in `table`, `markdown`, or `json`.
+
+### Semantic Search
+
+```bash
+# Compute embeddings for all indexed chunks
+cargo run -- embed
+
+# Search code by natural language
+cargo run -- similar "error handling" --limit 10 --threshold 0.7
+```
+
+### File Watcher
+
+```bash
+# Watch directory and auto-reindex on changes
+cargo run -- watch . --debounce 3 -v
+```
+
+### Raw Cypher Queries
+
+```bash
+# Execute a raw Cypher query against the graph
+cargo run -- query "MATCH (f:File) RETURN f.path LIMIT 10"
+```
+
+### Interactive REPL
 
 ```bash
 cargo run -- repl
 ```
-Inside the REPL, use shortcuts like `.help`, `.callers`, `.callees`, `.deps`, `.context`, or run raw database queries directly.
+
+Shortcuts: `.help`, `.callers <symbol>`, `.callees <symbol>`, `.deps <file>`, `.context <symbol>`, `.exit`/`.quit`. Any non-shortcut input is executed as a raw Cypher query.
 
 ### Test
 

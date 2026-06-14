@@ -96,13 +96,13 @@ pub fn resolve_imports(files: &[FileRecord]) -> Vec<(String, String)> {
                             let norm_rs = normalize_path(&candidate_rs);
                             let norm_mod = normalize_path(&candidate_mod);
 
-                            let found = if file_paths.contains_key(
-                                &norm_rs.to_string_lossy().to_string(),
-                            ) {
+                            let found = if file_paths
+                                .contains_key(&norm_rs.to_string_lossy().to_string())
+                            {
                                 Some(norm_rs)
-                            } else if file_paths.contains_key(
-                                &norm_mod.to_string_lossy().to_string(),
-                            ) {
+                            } else if file_paths
+                                .contains_key(&norm_mod.to_string_lossy().to_string())
+                            {
                                 Some(norm_mod)
                             } else {
                                 None
@@ -375,10 +375,7 @@ mod tests {
         #[test]
         fn rust_multi_segment_with_mod_rs() {
             let files = vec![
-                file_record(
-                    "src/main.rs",
-                    r#"[{"path":"crate::a::b::Item","line":1}]"#,
-                ),
+                file_record("src/main.rs", r#"[{"path":"crate::a::b::Item","line":1}]"#),
                 file_record("src/a.rs", "[]"),
                 file_record("src/a/b/mod.rs", "[]"),
             ];
@@ -402,7 +399,10 @@ mod tests {
             ];
             let edges = resolve_imports(&files);
             assert!(
-                edges.contains(&("src/nested/child.rs".to_string(), "src/other/util.rs".to_string())),
+                edges.contains(&(
+                    "src/nested/child.rs".to_string(),
+                    "src/other/util.rs".to_string()
+                )),
                 "super then deep. Got: {:?}",
                 edges
             );

@@ -12,7 +12,10 @@ impl LanguageParser for PythonParser {
         let mut calls = Vec::new();
 
         let mut parser = Parser::new();
-        if parser.set_language(&tree_sitter_python::language()).is_err() {
+        if parser
+            .set_language(&tree_sitter_python::language())
+            .is_err()
+        {
             return FileAnalysis {
                 nodes,
                 edges,
@@ -95,8 +98,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                         is_after_from = false;
                     } else if is_after_from {
                         if child.kind() == "dotted_name" || child.kind() == "relative_import" {
-                            module_path =
-                                child.utf8_text(ctx.source).unwrap_or("").to_owned();
+                            module_path = child.utf8_text(ctx.source).unwrap_or("").to_owned();
                             if !module_path.is_empty() {
                                 ctx.imports.push(RawImport {
                                     path: module_path.clone(),
@@ -109,8 +111,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                             || child.kind() == "identifier"
                             || child.kind() == "aliased_import")
                     {
-                        let mut name_text =
-                            child.utf8_text(ctx.source).unwrap_or("").to_owned();
+                        let mut name_text = child.utf8_text(ctx.source).unwrap_or("").to_owned();
                         if child.kind() == "aliased_import" {
                             if let Some(name_node) = child.child_by_field_name("name") {
                                 name_text =
@@ -135,8 +136,10 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                 let name = func_node.utf8_text(ctx.source).unwrap_or("").to_owned();
                 if func_node.kind() == "attribute" {
                     if let Some(attribute_node) = func_node.child_by_field_name("attribute") {
-                        let method_name =
-                            attribute_node.utf8_text(ctx.source).unwrap_or("").to_owned();
+                        let method_name = attribute_node
+                            .utf8_text(ctx.source)
+                            .unwrap_or("")
+                            .to_owned();
                         let is_valid = !method_name.is_empty()
                             && method_name.chars().all(|c| c.is_alphanumeric() || c == '_');
                         if is_valid {
@@ -148,8 +151,8 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                         }
                     }
                 } else {
-                    let is_valid = !name.is_empty()
-                        && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+                    let is_valid =
+                        !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
                     if is_valid {
                         ctx.calls.push(RawCall {
                             name,
@@ -188,10 +191,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                 signature,
             });
 
-            let from_id = active_parent
-                .as_deref()
-                .unwrap_or(ctx.file_path)
-                .to_owned();
+            let from_id = active_parent.as_deref().unwrap_or(ctx.file_path).to_owned();
             ctx.edges.push(EdgeData {
                 from_id,
                 to_id: symbol_id.clone(),
@@ -239,10 +239,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                 signature,
             });
 
-            let from_id = active_parent
-                .as_deref()
-                .unwrap_or(ctx.file_path)
-                .to_owned();
+            let from_id = active_parent.as_deref().unwrap_or(ctx.file_path).to_owned();
             ctx.edges.push(EdgeData {
                 from_id,
                 to_id: symbol_id.clone(),

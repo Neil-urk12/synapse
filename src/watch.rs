@@ -4,6 +4,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::index::{
+    CONTAINMENT_FILE_CYPHER, CONTAINMENT_SYMBOL_CYPHER, DELETE_SYMBOLS_CYPHER, FILE_UPSERT_CYPHER,
+    SYMBOL_CREATE_CYPHER,
+};
 use lbug::{Connection, Database, SystemConfig, Value};
 use notify::Watcher;
 
@@ -241,24 +245,11 @@ fn process_batch(
 
     // Prepare statements once for the whole batch (was per-file previously —
     // a strict win, no behavior change).
-    let mut file_upsert = conn.prepare(
-        "MERGE (f:File {path: $path}) \
-         ON CREATE SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports \
-         ON MATCH SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports",
-    )?;
-    let mut delete_symbols =
-        conn.prepare("MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol) DETACH DELETE s")?;
-    let mut symbol_create = conn.prepare(
-        "MERGE (s:Symbol {id: $id}) \
-         ON CREATE SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls \
-         ON MATCH SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls",
-    )?;
-    let mut containment_file = conn.prepare(
-        "MATCH (f:File {path: $from_id}), (s:Symbol {id: $to_id}) MERGE (f)-[:CONTAINS]->(s)",
-    )?;
-    let mut containment_symbol = conn.prepare(
-        "MATCH (p:Symbol {id: $from_id}), (c:Symbol {id: $to_id}) MERGE (p)-[:CONTAINS]->(c)",
-    )?;
+    let mut file_upsert = conn.prepare(FILE_UPSERT_CYPHER)?;
+    let mut delete_symbols = conn.prepare(DELETE_SYMBOLS_CYPHER)?;
+    let mut symbol_create = conn.prepare(SYMBOL_CREATE_CYPHER)?;
+    let mut containment_file = conn.prepare(CONTAINMENT_FILE_CYPHER)?;
+    let mut containment_symbol = conn.prepare(CONTAINMENT_SYMBOL_CYPHER)?;
 
     let mut stmts = crate::index::PreparedStatements {
         file_upsert: &mut file_upsert,

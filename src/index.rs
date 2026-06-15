@@ -6,6 +6,26 @@ use std::path::PathBuf;
 use crate::schema;
 use crate::types::db::ParsedPayload;
 
+/// Cypher statements shared by the index writer thread (`run_index`) and the
+/// watch batch processor (`process_batch`). Centralized here so a schema change
+/// only needs to be made in one place.
+pub const FILE_UPSERT_CYPHER: &str = "MERGE (f:File {path: $path}) \
+ ON CREATE SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports \
+ ON MATCH SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports";
+
+pub const DELETE_SYMBOLS_CYPHER: &str =
+    "MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol) DETACH DELETE s";
+
+pub const SYMBOL_CREATE_CYPHER: &str = "MERGE (s:Symbol {id: $id}) \
+ ON CREATE SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls \
+ ON MATCH SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls";
+
+pub const CONTAINMENT_FILE_CYPHER: &str =
+    "MATCH (f:File {path: $from_id}), (s:Symbol {id: $to_id}) MERGE (f)-[:CONTAINS]->(s)";
+
+pub const CONTAINMENT_SYMBOL_CYPHER: &str =
+    "MATCH (p:Symbol {id: $from_id}), (c:Symbol {id: $to_id}) MERGE (p)-[:CONTAINS]->(c)";
+
 pub struct PreparedStatements<'a> {
     pub file_upsert: &'a mut lbug::PreparedStatement,
     pub delete_symbols: &'a mut lbug::PreparedStatement,
@@ -202,6 +222,14 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
 
     let (tx, rx) = std::sync::mpsc::sync_channel::<ParsedPayload>(100);
 
+    // Shared writer-health flag. The writer thread sets this to false on
+    // any early return (DB open failure, Connection::new failure); the
+    // walker factory checks it before each entry and bails via
+    // `WalkState::Quit` to avoid the per-file warning spam that would
+    // otherwise flood stderr on a large workspace.
+    let writer_alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let writer_alive_writer = std::sync::Arc::clone(&writer_alive);
+
     let db_path_clone = db_path.clone();
     let db_writer = std::thread::spawn(move || {
         let db = match Database::new(&db_path_clone, SystemConfig::default()) {
@@ -212,6 +240,7 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
                     db_path_clone.display(),
                     e
                 );
+                writer_alive_writer.store(false, std::sync::atomic::Ordering::SeqCst);
                 return (0u64, 0u64);
             }
         };
@@ -219,30 +248,26 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Error: DB writer failed to connect: {}", e);
+                writer_alive_writer.store(false, std::sync::atomic::Ordering::SeqCst);
                 return (0u64, 0u64);
             }
         };
 
-        let mut prepared_file_upsert = conn.prepare(
-            "MERGE (f:File {path: $path}) \
-             ON CREATE SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports \
-             ON MATCH SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports"
-        ).expect("Bug: file_upsert prepare failed (hardcoded SQL)");
+        let mut prepared_file_upsert = conn
+            .prepare(FILE_UPSERT_CYPHER)
+            .expect("Bug: file_upsert prepare failed (hardcoded Cypher)");
         let mut prepared_delete_symbols = conn
-            .prepare("MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol) DETACH DELETE s")
-            .expect("Bug: delete_symbols prepare failed (hardcoded SQL)");
-        let mut prepared_symbol_create = conn.prepare(
-            "MERGE (s:Symbol {id: $id}) \
-             ON CREATE SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls \
-             ON MATCH SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls"
-        ).expect("Bug: symbol_create prepare failed (hardcoded SQL)");
-        let mut prepared_containment_file = conn.prepare(
-            "MATCH (f:File {path: $from_id}), (s:Symbol {id: $to_id}) MERGE (f)-[:CONTAINS]->(s)"
-        ).expect("Bug: containment_file prepare failed (hardcoded SQL)");
-        let mut prepared_containment_symbol = conn.prepare(
-            "MATCH (p:Symbol {id: $from_id}), (c:Symbol {id: $to_id}) MERGE (p)-[:CONTAINS]->(c)"
-        ).expect("Bug: containment_symbol prepare failed (hardcoded SQL)");
-
+            .prepare(DELETE_SYMBOLS_CYPHER)
+            .expect("Bug: delete_symbols prepare failed (hardcoded Cypher)");
+        let mut prepared_symbol_create = conn
+            .prepare(SYMBOL_CREATE_CYPHER)
+            .expect("Bug: symbol_create prepare failed (hardcoded Cypher)");
+        let mut prepared_containment_file = conn
+            .prepare(CONTAINMENT_FILE_CYPHER)
+            .expect("Bug: containment_file prepare failed (hardcoded Cypher)");
+        let mut prepared_containment_symbol = conn
+            .prepare(CONTAINMENT_SYMBOL_CYPHER)
+            .expect("Bug: containment_symbol prepare failed (hardcoded Cypher)");
         let mut stmts = PreparedStatements {
             file_upsert: &mut prepared_file_upsert,
             delete_symbols: &mut prepared_delete_symbols,
@@ -288,12 +313,20 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
 
     walker.run(|| {
         let tx = tx.clone();
+        let writer_alive = std::sync::Arc::clone(&writer_alive);
         let hash_cache = &hash_cache;
         let abs_db_path = &abs_db_path;
         let path_clone = &path_clone;
         let skip_count = &skip_count_atomic_clone;
 
         Box::new(move |entry| {
+            // Bail early once the writer thread has given up. Limits the
+            // per-file warning spam to at most one message per walker
+            // thread (the file it was already processing when the writer
+            // died) instead of one per remaining file in the workspace.
+            if !writer_alive.load(std::sync::atomic::Ordering::SeqCst) {
+                return ignore::WalkState::Quit;
+            }
             let entry = match entry {
                 Ok(e) => e,
                 Err(_) => return ignore::WalkState::Continue,
@@ -314,7 +347,12 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
 
                 match crate::processor::process_file(file_path, path_clone, hash_cache) {
                     Ok(Some(payload)) => {
-                        let _ = tx.send(payload);
+                        if tx.send(payload).is_err() {
+                            eprintln!(
+                                "Warning: DB writer is no longer accepting payloads; '{}' will not be indexed (check writer errors above).",
+                                file_path.display()
+                            );
+                        }
                     }
                     Ok(None) => {
                         skip_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -468,5 +506,32 @@ mod tests {
             let row = result.next().unwrap();
             assert_eq!(row.first().unwrap(), &Value::String("[]".to_string()));
         });
+    }
+
+    #[test]
+    fn test_walker_bails_after_writer_death() {
+        // Smoke test: a workspace with many files + a DB path whose parent
+        // doesn't exist forces Database::new to fail at writer construction.
+        // With the early-bail fix, the walker exits via WalkState::Quit
+        // after observing the writer_alive flag flip; without the fix, the
+        // walker would visit every file and emit a per-file warning.
+        //
+        // This test only asserts the run completes; capturing stderr to
+        // count warnings would require plumbing a pluggable writer through
+        // eprintln!, which is out of scope here.
+        let workspace = tempfile::tempdir().unwrap();
+        for i in 0..50 {
+            std::fs::write(
+                workspace.path().join(format!("f_{}.rs", i)),
+                "pub fn g() {}\n",
+            )
+            .unwrap();
+        }
+        let bad_db = workspace
+            .path()
+            .join("definitely_does_not_exist")
+            .join("foo.lbug");
+
+        run_index(workspace.path().to_path_buf(), bad_db, false);
     }
 }

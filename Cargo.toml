@@ -53,6 +53,26 @@ indicatif = "0.17"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
+[lints.clippy]
+# Correctness / performance: catch real bugs in the DB / index hot path.
+redundant_clone = "warn"
+cast_possible_truncation = "deny"
+cast_sign_loss = "deny"
+cast_lossless = "deny"
+# Hygiene: no stray debug prints in production code paths. `println!`
+# calls scattered through business logic (status, progress, summary)
+# are tracked in `docs/audits/2026-06-15-rust-best-practices-audit.md`
+# Finding 12 — the planned fix is to migrate to `tracing`, but that's
+# out of scope for this PR.
+dbg_macro = "deny"
+print_stdout = "warn"
+# `expect` and `panic` in the indexer hot path can crash a long-running
+# batch; we use `?` and proper error propagation instead. Test code
+# (`#[cfg(test)]`) is exempt because panics there are the assertion
+# mechanism. See `docs/audits/2026-06-15-rust-best-practices-audit.md`.
+expect_used = "warn"
+panic = "warn"
+
 [dev-dependencies]
 tempfile = "3"
 

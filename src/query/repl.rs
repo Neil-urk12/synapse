@@ -1,7 +1,5 @@
-use crate::query::callees::run_callees_internal;
-use crate::query::callers::run_callers_internal;
-use crate::query::context::run_context_internal;
-use crate::query::dependencies::run_dependencies_internal;
+use crate::query::format::QueryFormat;
+use crate::query::handler::{run_call_graph, run_context, run_dependencies, Direction};
 use crate::query::raw::run_query_internal;
 use lbug::{Connection, Database, SystemConfig};
 use std::path::Path;
@@ -109,7 +107,14 @@ pub fn handle_repl_command(
                     )?;
                 } else {
                     let symbol = parts[1..].join(" ");
-                    if let Err(e) = run_callers_internal(conn, &symbol, true, "table", writer) {
+                    if let Err(e) = run_call_graph(
+                        conn,
+                        &symbol,
+                        true,
+                        Direction::Callers,
+                        QueryFormat::Table,
+                        writer,
+                    ) {
                         writeln!(writer, "Error running .callers: {}", e)?;
                     }
                 }
@@ -122,7 +127,14 @@ pub fn handle_repl_command(
                     )?;
                 } else {
                     let symbol = parts[1..].join(" ");
-                    if let Err(e) = run_callees_internal(conn, &symbol, true, "table", writer) {
+                    if let Err(e) = run_call_graph(
+                        conn,
+                        &symbol,
+                        true,
+                        Direction::Callees,
+                        QueryFormat::Table,
+                        writer,
+                    ) {
                         writeln!(writer, "Error running .callees: {}", e)?;
                     }
                 }
@@ -132,7 +144,8 @@ pub fn handle_repl_command(
                     writeln!(writer, "Error: Missing target file. Usage: .deps <file>")?;
                 } else {
                     let file = parts[1..].join(" ");
-                    if let Err(e) = run_dependencies_internal(conn, &file, true, "table", writer) {
+                    if let Err(e) = run_dependencies(conn, &file, true, QueryFormat::Table, writer)
+                    {
                         writeln!(writer, "Error running .deps: {}", e)?;
                     }
                 }
@@ -145,15 +158,20 @@ pub fn handle_repl_command(
                     )?;
                 } else {
                     let target = parts[1..].join(" ");
-                    if let Err(e) =
-                        run_context_internal(conn, Some(&target), None, false, "markdown", writer)
-                    {
-                        if let Err(e2) = run_context_internal(
+                    if let Err(e) = run_context(
+                        conn,
+                        Some(&target),
+                        None,
+                        false,
+                        QueryFormat::Markdown,
+                        writer,
+                    ) {
+                        if let Err(e2) = run_context(
                             conn,
                             None,
                             Some(&target),
                             false,
-                            "markdown",
+                            QueryFormat::Markdown,
                             writer,
                         ) {
                             writeln!(writer, "Error running .context (symbol): {}", e)?;

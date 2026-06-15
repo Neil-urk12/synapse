@@ -32,6 +32,18 @@ pub struct CalleeInfo {
     pub call_site_line: usize,
 }
 
+impl From<CalleeInfo> for CallerInfo {
+    fn from(c: CalleeInfo) -> Self {
+        Self {
+            id: c.id,
+            name: c.name,
+            kind: c.kind,
+            signature: c.signature,
+            call_site_line: c.call_site_line,
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ContainedSymbolInfo {
     pub id: String,

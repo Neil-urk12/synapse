@@ -14,7 +14,12 @@ pub mod types;
 pub mod watch;
 
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use lbug::{Connection, Database, SystemConfig};
+use std::error::Error;
+use std::path::{Path, PathBuf};
+
+use crate::query::format::QueryFormat;
+use crate::query::handler::{run_call_graph, run_context, run_dependencies, Direction};
 
 #[derive(Parser, Debug)]
 #[command(name = "synapse")]
@@ -209,7 +214,7 @@ fn main() {
             db,
         } => {
             if let Err(err) =
-                query::handle_context(symbol.as_deref(), file.as_deref(), fuzzy, &format, &db)
+                handle_context(symbol.as_deref(), file.as_deref(), fuzzy, &format, &db)
             {
                 eprintln!("Error: {}", err);
                 std::process::exit(1);
@@ -221,7 +226,7 @@ fn main() {
             format,
             db,
         } => {
-            if let Err(err) = query::handle_callers(&symbol, exact, &format, &db) {
+            if let Err(err) = handle_callers(&symbol, exact, &format, &db) {
                 eprintln!("Error: {}", err);
                 std::process::exit(1);
             }
@@ -232,7 +237,7 @@ fn main() {
             format,
             db,
         } => {
-            if let Err(err) = query::handle_callees(&symbol, exact, &format, &db) {
+            if let Err(err) = handle_callees(&symbol, exact, &format, &db) {
                 eprintln!("Error: {}", err);
                 std::process::exit(1);
             }
@@ -243,7 +248,7 @@ fn main() {
             format,
             db,
         } => {
-            if let Err(err) = query::handle_dependencies(&file, exact, &format, &db) {
+            if let Err(err) = handle_dependencies(&file, exact, &format, &db) {
                 eprintln!("Error: {}", err);
                 std::process::exit(1);
             }
@@ -285,6 +290,78 @@ fn main() {
             watch::run_watch(&path, &db, debounce, verbose);
         }
     }
+}
+
+fn handle_callers(
+    symbol: &str,
+    exact: bool,
+    format: &str,
+    db_path: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let db = Database::new(db_path, SystemConfig::default())?;
+    let conn = Connection::new(&db)?;
+    run_call_graph(
+        &conn,
+        symbol,
+        exact,
+        Direction::Callers,
+        QueryFormat::parse(format)?,
+        &mut std::io::stdout(),
+    )
+}
+
+fn handle_callees(
+    symbol: &str,
+    exact: bool,
+    format: &str,
+    db_path: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let db = Database::new(db_path, SystemConfig::default())?;
+    let conn = Connection::new(&db)?;
+    run_call_graph(
+        &conn,
+        symbol,
+        exact,
+        Direction::Callees,
+        QueryFormat::parse(format)?,
+        &mut std::io::stdout(),
+    )
+}
+
+fn handle_dependencies(
+    file: &str,
+    exact: bool,
+    format: &str,
+    db_path: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let db = Database::new(db_path, SystemConfig::default())?;
+    let conn = Connection::new(&db)?;
+    run_dependencies(
+        &conn,
+        file,
+        exact,
+        QueryFormat::parse(format)?,
+        &mut std::io::stdout(),
+    )
+}
+
+fn handle_context(
+    symbol: Option<&str>,
+    file: Option<&str>,
+    fuzzy: bool,
+    format: &str,
+    db_path: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let db = Database::new(db_path, SystemConfig::default())?;
+    let conn = Connection::new(&db)?;
+    run_context(
+        &conn,
+        symbol,
+        file,
+        fuzzy,
+        QueryFormat::parse_for_context(format)?,
+        &mut std::io::stdout(),
+    )
 }
 
 #[cfg(test)]

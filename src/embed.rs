@@ -31,7 +31,10 @@ pub fn handle_embed(
             .and_then(|row| row.into_iter().next())
             .and_then(|v| {
                 if let Value::Int64(n) = v {
-                    Some(n as usize)
+                    // Defensive: a corrupt or schema-drift DB can hand us
+                    // a negative or oversized count. Treat anything that
+                    // doesn't fit in `usize` as zero chunks.
+                    usize::try_from(n).ok()
                 } else {
                     None
                 }

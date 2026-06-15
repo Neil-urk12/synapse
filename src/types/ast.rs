@@ -1,10 +1,10 @@
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RawImport {
     pub path: String,
     pub line: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RawCall {
     pub name: String,
     pub line: usize,
@@ -30,7 +30,7 @@ impl FileAnalysis {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeData {
     pub id: String,
     pub name: String,
@@ -41,14 +41,14 @@ pub struct NodeData {
     pub signature: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeData {
     pub from_id: String,
     pub to_id: String,
     pub edge_type: String,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct CodeChunk {
     pub id: String,
     pub text: String,

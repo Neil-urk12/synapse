@@ -83,10 +83,19 @@ pub fn run_watch(path: &Path, db_path: &Path, debounce_secs: u64, verbose: bool)
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
 
-    ctrlc::set_handler(move || {
+    // ctrlc::set_handler can fail in adversarial environments (e.g. the
+    // process already registered a SIGINT handler in another thread, or
+    // the OS is out of signal-handler slots). Propagate as a clean warning
+    // instead of panicking — the watcher is still useful without a Ctrl-C
+    // hook, so the user can fall back to Ctrl-\\ or kill.
+    if let Err(err) = ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
-    })
-    .expect("Bug: Failed to set Ctrl-C handler");
+    }) {
+        eprintln!(
+            "Warning: Failed to install Ctrl-C handler ({}). Use Ctrl-\\ or kill to stop the watcher.",
+            err
+        );
+    }
 
     let workspace_root = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let db_name = db_path
@@ -143,8 +152,10 @@ pub fn run_watch(path: &Path, db_path: &Path, debounce_secs: u64, verbose: bool)
                         Ok(Err(err)) => {
                             eprintln!("Warning: File watcher error: {}", err);
                         }
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
-                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                        Err(
+                            std::sync::mpsc::RecvTimeoutError::Timeout
+                            | std::sync::mpsc::RecvTimeoutError::Disconnected,
+                        ) => break,
                     }
                 }
 
@@ -468,7 +479,7 @@ mod tests {
         crate::schema::init_schema(&conn).unwrap();
 
         let mut paths = HashSet::new();
-        paths.insert(file_path.clone());
+        paths.insert(file_path);
 
         let result = process_batch(&conn, &dir, &paths, false);
         assert!(result.is_ok(), "process_batch failed: {:?}", result.err());

@@ -90,8 +90,10 @@ fn fetch_all_symbols(conn: &Connection) -> Result<Vec<SymbolInfo>, Box<dyn Error
                 id: id.clone(),
                 name: name.clone(),
                 kind: kind.clone(),
-                start_line: *sl as usize,
-                end_line: *el as usize,
+                // Same defensive cast as `query/db.rs`: `INT64` could
+                // be negative or oversized on a corrupt DB.
+                start_line: usize::try_from(*sl).unwrap_or(0),
+                end_line: usize::try_from(*el).unwrap_or(0),
                 signature: sig.clone(),
             });
         }
@@ -184,10 +186,10 @@ pub fn run_context(
 
     if let Some(sym) = symbol {
         let resolved = resolve_one_symbol(conn, sym, !fuzzy, true)?;
-        target_symbol = Some(resolved.clone());
+        target_symbol = Some(resolved);
     } else if let Some(fl) = file {
         let resolved = resolve_one_file(conn, fl, !fuzzy, true)?;
-        target_file = Some(resolved.clone());
+        target_file = Some(resolved);
     }
 
     if let Some(ref sym) = target_symbol {

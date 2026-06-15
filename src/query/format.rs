@@ -276,9 +276,12 @@ impl QueryFormat {
                 }
             }
             QueryFormat::Table => {
-                unreachable!(
-                    "parse_for_context rejects 'table'; render_context called with Table is a logic error"
-                );
+                // `Table` is reachable from `QueryFormat::parse` (the
+                // `query` and `dependencies` subcommands use it) but not
+                // from `parse_for_context` (the `context` subcommand).
+                // Returning an error makes the invariant an enforced API
+                // contract rather than a panic at runtime.
+                return Err("render_context does not support the 'table' format; use parse_for_context instead".into());
             }
         }
         Ok(())

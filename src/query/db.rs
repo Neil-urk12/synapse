@@ -28,7 +28,11 @@ pub fn fetch_callers(
                 name: name.clone(),
                 kind: kind.clone(),
                 signature: sig.clone(),
-                call_site_line: *line as usize,
+                // `call_site_line` is stored as `INT64` in LadybugDB; a
+                // negative or oversized value would silently wrap on a
+                // direct `as usize` cast. Treat it as 0 in that case
+                // (we lose nothing — the row is unusable anyway).
+                call_site_line: usize::try_from(*line).unwrap_or(0),
             });
         }
     }
@@ -62,7 +66,7 @@ pub fn fetch_callees(
                 name: name.clone(),
                 kind: kind.clone(),
                 signature: sig.clone(),
-                call_site_line: *line as usize,
+                call_site_line: usize::try_from(*line).unwrap_or(0),
             });
         }
     }

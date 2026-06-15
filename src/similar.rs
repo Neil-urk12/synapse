@@ -27,6 +27,13 @@ pub fn scored_chunks_from_result(result: lbug::QueryResult, threshold: f32) -> V
             Some(Value::String(s)) => s.clone(),
             _ => continue,
         };
+        // Distance is stored as `INT64` in LadybugDB but the cosine
+        // threshold (`threshold: f32` in main) is a float. The actual
+        // distance values written by `similar.rs::write_embeddings` are
+        // small non-negative `f32` values stored as `INT64` via their
+        // bit representation, so the loss is bounded and the conversion
+        // is intentional.
+        #[allow(clippy::cast_precision_loss)]
         let distance = match row.get(3) {
             Some(Value::Float(f)) => *f,
             Some(Value::Int64(i)) => *i as f32,

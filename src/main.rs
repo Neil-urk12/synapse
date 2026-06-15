@@ -5,6 +5,7 @@ pub mod file_utils;
 pub mod index;
 pub mod linker;
 pub mod parser;
+pub mod processor;
 pub mod query;
 pub mod resolver;
 pub mod schema;

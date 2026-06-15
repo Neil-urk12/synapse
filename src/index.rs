@@ -1,10 +1,8 @@
 use ignore::WalkBuilder;
 use lbug::{Connection, Database, SystemConfig, Value};
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::PathBuf;
 
-use crate::file_utils;
 use crate::schema;
 use crate::types::db::ParsedPayload;
 
@@ -314,58 +312,19 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
                     return ignore::WalkState::Continue;
                 }
 
-                let relative_path = file_path
-                    .strip_prefix(path_clone)
-                    .unwrap_or(file_path)
-                    .to_path_buf();
-                let relative_path_str = relative_path.to_string_lossy().to_string();
-
-                if let Ok(metadata) = entry.metadata() {
-                    let size = metadata.len();
-                    let lang = file_utils::detect_language(file_path);
-                    if let Ok(hash) = file_utils::compute_sha256(file_path) {
-                        if let Some(stored_hash) = hash_cache.get(&relative_path_str) {
-                            if *stored_hash == hash {
-                                skip_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                                return ignore::WalkState::Continue;
-                            }
-                        }
-
-                        let ext = file_path
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .unwrap_or("")
-                            .to_lowercase();
-                        let is_supported =
-                            matches!(ext.as_str(), "rs" | "js" | "jsx" | "ts" | "tsx");
-
-                        let mut analysis_opt = None;
-                        let mut content_opt = None;
-
-                        if is_supported {
-                            if let Ok(mut file_handle) = std::fs::File::open(file_path) {
-                                let mut content = String::new();
-                                if file_handle.read_to_string(&mut content).is_ok() {
-                                    let analysis = crate::parser::ASTParser::parse_file(
-                                        &relative_path,
-                                        &content,
-                                    );
-                                    analysis_opt = Some(analysis);
-                                    content_opt = Some(content);
-                                }
-                            }
-                        }
-
-                        let payload = ParsedPayload {
-                            relative_path: relative_path_str,
-                            language: lang,
-                            size,
-                            hash,
-                            analysis: analysis_opt,
-                            content: content_opt,
-                        };
-
+                match crate::processor::process_file(file_path, path_clone, hash_cache) {
+                    Ok(Some(payload)) => {
                         let _ = tx.send(payload);
+                    }
+                    Ok(None) => {
+                        skip_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "Warning: Failed to process '{}': {}",
+                            file_path.display(),
+                            err
+                        );
                     }
                 }
             }

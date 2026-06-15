@@ -44,6 +44,17 @@ impl Language {
     }
 }
 
+/// Look up the parser for a file by its extension. Single source of truth
+/// for "is this file parseable by Synapse?". Replaces the per-caller
+/// hardcoded extension lists that previously caused the index and watch
+/// paths to disagree (e.g. Go/Python/C++ files indexed as File nodes with
+/// no Symbols).
+pub fn language_from_path(path: &Path) -> Option<Language> {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .and_then(language_from_ext)
+}
+
 fn language_from_ext(ext: &str) -> Option<Language> {
     match ext {
         "rs" => Some(Language::Rust(rust::RustParser)),

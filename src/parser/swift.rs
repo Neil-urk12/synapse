@@ -97,10 +97,8 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                         // navigation_expression.suffix = navigation_suffix(suffix = method).
                         if let Some(nav_suffix) = func_node.child_by_field_name("suffix") {
                             if let Some(member_node) = nav_suffix.child_by_field_name("suffix") {
-                                let name = member_node
-                                    .utf8_text(ctx.source)
-                                    .unwrap_or("")
-                                    .to_owned();
+                                let name =
+                                    member_node.utf8_text(ctx.source).unwrap_or("").to_owned();
                                 let is_valid = !name.is_empty()
                                     && name.chars().all(|c| c.is_alphanumeric() || c == '_');
                                 if is_valid {

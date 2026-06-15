@@ -183,25 +183,9 @@ fn should_watch(path: &Path, db_name: &str) -> bool {
             return false;
         }
     }
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    matches!(
-        ext,
-        "rs" | "js"
-            | "jsx"
-            | "ts"
-            | "tsx"
-            | "go"
-            | "py"
-            | "c"
-            | "cpp"
-            | "cc"
-            | "cxx"
-            | "h"
-            | "hpp"
-            | "java"
-            | "kt"
-            | "kts"
-    )
+    // Delegate parseability to the Language registry. Stays in sync with
+    // index.rs's per-file processing for free.
+    crate::parser::language_from_path(path).is_some()
 }
 
 fn get_cached_hash(
@@ -239,6 +223,51 @@ fn process_batch(
     paths: &HashSet<PathBuf>,
     verbose: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Pre-populate the hash cache for the files in this batch. The cache is
+    // passed into process_file so it can decide whether to skip unchanged
+    // files without re-querying the DB per file.
+    let mut hash_cache: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for path in paths {
+        let relative_path = path
+            .strip_prefix(workspace_root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string();
+        if let Ok(Some(stored)) = get_cached_hash(conn, &relative_path) {
+            hash_cache.insert(relative_path, stored);
+        }
+    }
+
+    // Prepare statements once for the whole batch (was per-file previously —
+    // a strict win, no behavior change).
+    let mut file_upsert = conn.prepare(
+        "MERGE (f:File {path: $path}) \
+         ON CREATE SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports \
+         ON MATCH SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports",
+    )?;
+    let mut delete_symbols =
+        conn.prepare("MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol) DETACH DELETE s")?;
+    let mut symbol_create = conn.prepare(
+        "MERGE (s:Symbol {id: $id}) \
+         ON CREATE SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls \
+         ON MATCH SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls",
+    )?;
+    let mut containment_file = conn.prepare(
+        "MATCH (f:File {path: $from_id}), (s:Symbol {id: $to_id}) MERGE (f)-[:CONTAINS]->(s)",
+    )?;
+    let mut containment_symbol = conn.prepare(
+        "MATCH (p:Symbol {id: $from_id}), (c:Symbol {id: $to_id}) MERGE (p)-[:CONTAINS]->(c)",
+    )?;
+
+    let mut stmts = crate::index::PreparedStatements {
+        file_upsert: &mut file_upsert,
+        delete_symbols: &mut delete_symbols,
+        symbol_create: &mut symbol_create,
+        containment_file: &mut containment_file,
+        containment_symbol: &mut containment_symbol,
+    };
+
     for path in paths {
         let relative_path = path
             .strip_prefix(workspace_root)
@@ -254,77 +283,24 @@ fn process_batch(
             continue;
         }
 
-        let hash = match crate::file_utils::compute_sha256(path) {
-            Ok(h) => h,
-            Err(err) => {
-                eprintln!("Warning: Cannot hash '{}': {}", relative_path, err);
-                continue;
+        match crate::processor::process_file(path, workspace_root, &hash_cache) {
+            Ok(Some(payload)) => {
+                if let Err(err) =
+                    crate::index::write_payload_to_db(conn, payload, &mut stmts, verbose)
+                {
+                    eprintln!("Warning: Failed to index '{}': {}", relative_path, err);
+                } else if verbose {
+                    println!("  Indexed: {}", relative_path);
+                }
             }
-        };
-
-        // Skip if unchanged
-        if let Ok(Some(cached)) = get_cached_hash(conn, &relative_path) {
-            if cached == hash {
+            Ok(None) => {
                 if verbose {
                     println!("  Skipped (unchanged): {}", relative_path);
                 }
-                continue;
             }
-        }
-
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
             Err(err) => {
-                eprintln!("Warning: Cannot read '{}': {}", relative_path, err);
-                continue;
+                eprintln!("Warning: Cannot process '{}': {}", relative_path, err);
             }
-        };
-
-        let lang = crate::file_utils::detect_language(path);
-        let analysis = crate::parser::ASTParser::parse_file(path, &content);
-        let size = content.len() as u64;
-
-        let payload = crate::types::db::ParsedPayload {
-            relative_path: relative_path.clone(),
-            language: lang,
-            size,
-            hash,
-            analysis: Some(analysis),
-            content: Some(content),
-        };
-
-        // Prepare fresh statements for this file
-        let mut file_upsert = conn.prepare(
-            "MERGE (f:File {path: $path}) \
-             ON CREATE SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports \
-             ON MATCH SET f.language = $language, f.file_size = $file_size, f.hash = $hash, f.raw_imports = $raw_imports",
-        )?;
-        let mut delete_symbols = conn
-            .prepare("MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol) DETACH DELETE s")?;
-        let mut symbol_create = conn.prepare(
-            "MERGE (s:Symbol {id: $id}) \
-             ON CREATE SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls \
-             ON MATCH SET s.name = $name, s.kind = $kind, s.start_line = $start_line, s.start_col = $start_col, s.end_line = $end_line, s.signature = $signature, s.raw_calls = $raw_calls",
-        )?;
-        let mut containment_file = conn.prepare(
-            "MATCH (f:File {path: $from_id}), (s:Symbol {id: $to_id}) MERGE (f)-[:CONTAINS]->(s)",
-        )?;
-        let mut containment_symbol = conn.prepare(
-            "MATCH (p:Symbol {id: $from_id}), (c:Symbol {id: $to_id}) MERGE (p)-[:CONTAINS]->(c)",
-        )?;
-
-        let mut stmts = crate::index::PreparedStatements {
-            file_upsert: &mut file_upsert,
-            delete_symbols: &mut delete_symbols,
-            symbol_create: &mut symbol_create,
-            containment_file: &mut containment_file,
-            containment_symbol: &mut containment_symbol,
-        };
-
-        if let Err(err) = crate::index::write_payload_to_db(conn, payload, &mut stmts, verbose) {
-            eprintln!("Warning: Failed to index '{}': {}", relative_path, err);
-        } else if verbose {
-            println!("  Indexed: {}", relative_path);
         }
     }
     Ok(())
@@ -345,7 +321,8 @@ mod tests {
     #[test]
     fn test_should_watch_supported_extensions() {
         let exts = [
-            "rs", "js", "jsx", "ts", "tsx", "go", "py", "c", "cpp", "h", "hpp", "java", "kt", "kts",
+            "rs", "js", "jsx", "ts", "tsx", "go", "py", "c", "cc", "cpp", "cxx", "h", "hpp",
+            "java", "kt", "kts", "rb", "php", "swift",
         ];
         for ext in &exts {
             let filename = format!("/tmp/test.{}", ext);

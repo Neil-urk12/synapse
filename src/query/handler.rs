@@ -5,6 +5,7 @@ use crate::query::db::{
 use crate::query::format::QueryFormat;
 use crate::types::query::{ContextPayload, FileInfo, SymbolInfo};
 use lbug::{Connection, Value};
+use std::error::Error;
 use std::io::Write;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,7 +23,7 @@ fn resolve_one_symbol(
     target: &str,
     exact: bool,
     warn_multiple: bool,
-) -> Result<SymbolInfo, Box<dyn std::error::Error>> {
+) -> Result<SymbolInfo, Box<dyn Error>> {
     let all_symbols = fetch_all_symbols(conn)?;
     let candidates = resolve_symbol_candidates(target, !exact, &all_symbols);
     if candidates.is_empty() {
@@ -44,7 +45,7 @@ fn resolve_one_file(
     target: &str,
     exact: bool,
     warn_multiple: bool,
-) -> Result<FileInfo, Box<dyn std::error::Error>> {
+) -> Result<FileInfo, Box<dyn Error>> {
     let all_files = fetch_all_files(conn)?;
     let candidates = resolve_file_candidates(target, !exact, &all_files);
     if candidates.is_empty() {
@@ -63,7 +64,7 @@ fn resolve_one_file(
     Ok(candidates.into_iter().next().unwrap())
 }
 
-fn fetch_all_symbols(conn: &Connection) -> Result<Vec<SymbolInfo>, Box<dyn std::error::Error>> {
+fn fetch_all_symbols(conn: &Connection) -> Result<Vec<SymbolInfo>, Box<dyn Error>> {
     let mut stmt = conn.prepare(
         "MATCH (s:Symbol) RETURN s.id, s.name, s.kind, s.start_line, s.end_line, s.signature",
     )?;
@@ -98,7 +99,7 @@ fn fetch_all_symbols(conn: &Connection) -> Result<Vec<SymbolInfo>, Box<dyn std::
     Ok(all_symbols)
 }
 
-fn fetch_all_files(conn: &Connection) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
+fn fetch_all_files(conn: &Connection) -> Result<Vec<FileInfo>, Box<dyn Error>> {
     let mut stmt = conn.prepare("MATCH (f:File) RETURN f.path, f.language")?;
     let query_res = conn.execute(&mut stmt, vec![])?;
     let mut all_files = Vec::new();
@@ -122,7 +123,7 @@ pub fn run_call_graph(
     direction: Direction,
     format: QueryFormat,
     writer: &mut dyn Write,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn Error>> {
     let target = resolve_one_symbol(conn, symbol, exact, false)?;
     let edges: Vec<crate::types::query::CallerInfo> = match direction {
         Direction::Callers => fetch_callers(conn, &target.id)?,
@@ -145,7 +146,7 @@ pub fn run_dependencies(
     exact: bool,
     format: QueryFormat,
     writer: &mut dyn Write,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn Error>> {
     let target = resolve_one_file(conn, file, exact, false)?;
     let imports = fetch_imports(conn, &target.path)?;
     let imported_by = fetch_imported_by(conn, &target.path)?;
@@ -162,7 +163,7 @@ pub fn run_context(
     fuzzy: bool,
     format: QueryFormat,
     writer: &mut dyn Write,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn Error>> {
     if symbol.is_some() && file.is_some() {
         return Err("Options --symbol and --file are mutually exclusive".into());
     }
@@ -232,7 +233,7 @@ pub fn run_context(
 mod tests {
     use super::*;
     use lbug::{Connection, Database, SystemConfig};
-    use std::path::Path;
+    use tempfile::tempdir;
 
     /// Populate an open connection with the schema and minimal data for tests.
     /// The caller owns the Database and Connection lifetimes.
@@ -265,11 +266,9 @@ mod tests {
 
     #[test]
     fn test_run_call_graph_callers_and_callees() {
-        let db_path = Path::new("test_handler_callgraph.lbug");
-        if db_path.exists() {
-            let _ = std::fs::remove_file(db_path);
-        }
-        let db = Database::new(db_path, SystemConfig::default()).unwrap();
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("test_handler_callgraph.lbug");
+        let db = Database::new(&db_path, SystemConfig::default()).unwrap();
         let conn = Connection::new(&db).unwrap();
         setup_test_db(&conn);
 
@@ -301,17 +300,13 @@ mod tests {
         .unwrap();
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("src/parser.rs::parse"));
-
-        let _ = std::fs::remove_file(db_path);
     }
 
     #[test]
     fn test_run_call_graph_json_key_varies_with_direction() {
-        let db_path = Path::new("test_handler_callgraph_json.lbug");
-        if db_path.exists() {
-            let _ = std::fs::remove_file(db_path);
-        }
-        let db = Database::new(db_path, SystemConfig::default()).unwrap();
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("test_handler_callgraph_json.lbug");
+        let db = Database::new(&db_path, SystemConfig::default()).unwrap();
         let conn = Connection::new(&db).unwrap();
         setup_test_db(&conn);
 
@@ -342,17 +337,13 @@ mod tests {
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("\"callees\""));
         assert!(!s.contains("\"callers\""));
-
-        let _ = std::fs::remove_file(db_path);
     }
 
     #[test]
     fn test_run_dependencies_table_and_json() {
-        let db_path = Path::new("test_handler_deps.lbug");
-        if db_path.exists() {
-            let _ = std::fs::remove_file(db_path);
-        }
-        let db = Database::new(db_path, SystemConfig::default()).unwrap();
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("test_handler_deps.lbug");
+        let db = Database::new(&db_path, SystemConfig::default()).unwrap();
         let conn = Connection::new(&db).unwrap();
         setup_test_db(&conn);
 
@@ -367,17 +358,13 @@ mod tests {
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("\"imports\""));
         assert!(s.contains("\"imported_by\""));
-
-        let _ = std::fs::remove_file(db_path);
     }
 
     #[test]
     fn test_run_context_symbol_markdown() {
-        let db_path = Path::new("test_handler_context.lbug");
-        if db_path.exists() {
-            let _ = std::fs::remove_file(db_path);
-        }
-        let db = Database::new(db_path, SystemConfig::default()).unwrap();
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("test_handler_context.lbug");
+        let db = Database::new(&db_path, SystemConfig::default()).unwrap();
         let conn = Connection::new(&db).unwrap();
         setup_test_db(&conn);
 
@@ -394,48 +381,13 @@ mod tests {
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("Context: src/main.rs::main"));
         assert!(s.contains("Function"));
-
-        let _ = std::fs::remove_file(db_path);
-    }
-
-    #[test]
-    fn test_run_context_table_falls_back_to_markdown() {
-        let db_path = Path::new("test_handler_context_table.lbug");
-        if db_path.exists() {
-            let _ = std::fs::remove_file(db_path);
-        }
-        let db = Database::new(db_path, SystemConfig::default()).unwrap();
-        let conn = Connection::new(&db).unwrap();
-        setup_test_db(&conn);
-
-        // run_context takes a QueryFormat directly. If a caller passes Table
-        // (bypassing parse_for_context), render_context defensively falls back
-        // to markdown. The proper rejection happens at the parse_for_context
-        // boundary, which is tested in format.rs.
-        let mut out = Vec::new();
-        let res = run_context(
-            &conn,
-            Some("main"),
-            None,
-            false,
-            QueryFormat::Table,
-            &mut out,
-        );
-        // We don't error — the defensive fallback writes markdown-shaped output.
-        assert!(res.is_ok());
-        let s = String::from_utf8(out).unwrap();
-        assert!(s.contains("Context: src/main.rs::main"));
-
-        let _ = std::fs::remove_file(db_path);
     }
 
     #[test]
     fn test_run_context_rejects_both_symbol_and_file() {
-        let db_path = Path::new("test_handler_context_both.lbug");
-        if db_path.exists() {
-            let _ = std::fs::remove_file(db_path);
-        }
-        let db = Database::new(db_path, SystemConfig::default()).unwrap();
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("test_handler_context_both.lbug");
+        let db = Database::new(&db_path, SystemConfig::default()).unwrap();
         let conn = Connection::new(&db).unwrap();
         setup_test_db(&conn);
 
@@ -453,17 +405,13 @@ mod tests {
             res.unwrap_err().to_string(),
             "Options --symbol and --file are mutually exclusive"
         );
-
-        let _ = std::fs::remove_file(db_path);
     }
 
     #[test]
     fn test_run_context_rejects_neither_symbol_nor_file() {
-        let db_path = Path::new("test_handler_context_neither.lbug");
-        if db_path.exists() {
-            let _ = std::fs::remove_file(db_path);
-        }
-        let db = Database::new(db_path, SystemConfig::default()).unwrap();
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("test_handler_context_neither.lbug");
+        let db = Database::new(&db_path, SystemConfig::default()).unwrap();
         let conn = Connection::new(&db).unwrap();
         setup_test_db(&conn);
 
@@ -474,7 +422,5 @@ mod tests {
             res.unwrap_err().to_string(),
             "Either --symbol or --file must be specified"
         );
-
-        let _ = std::fs::remove_file(db_path);
     }
 }

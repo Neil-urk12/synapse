@@ -193,8 +193,9 @@ impl QueryFormat {
         Ok(())
     }
 
-    /// Render a context payload. Only `Json` and `Markdown` are supported —
-    /// callers should parse the format string with `parse_for_context`.
+    /// Render a context payload. Callers must use `Json` or `Markdown` —
+    /// the CLI boundary parses with `parse_for_context`, which rejects `Table`.
+    /// `Table` is kept as an unreachable arm so the match stays exhaustive.
     pub fn render_context(
         &self,
         payload: &ContextPayload,
@@ -206,8 +207,7 @@ impl QueryFormat {
                 let json_str = serde_json::to_string_pretty(payload)?;
                 writeln!(writer, "{}", json_str)?;
             }
-            _ => {
-                // Markdown rendering (and defensive fallback for Table).
+            QueryFormat::Markdown => {
                 if let Some(ref sym) = payload.symbol {
                     writeln!(writer, "# Context: {} ({})", sym.id, sym.kind)?;
                     writeln!(writer, "\n## Signature\n`{}`", sym.signature)?;
@@ -274,6 +274,11 @@ impl QueryFormat {
                         writeln!(writer, "* `{}` (kind: {})", sym.id, sym.kind)?;
                     }
                 }
+            }
+            QueryFormat::Table => {
+                unreachable!(
+                    "parse_for_context rejects 'table'; render_context called with Table is a logic error"
+                );
             }
         }
         Ok(())
@@ -459,5 +464,32 @@ mod tests {
         let out = String::from_utf8(buf).unwrap();
         assert!(out.contains("\"symbol\""));
         assert!(out.contains("src/main.rs::main"));
+    }
+
+    #[test]
+    fn test_render_context_markdown() {
+        let payload = ContextPayload {
+            symbol: Some(sample_target()),
+            file: None,
+            source_code: "fn main() {}".to_string(),
+            callers: sample_edges(),
+            callees: vec![],
+            imports: vec!["src/lib.rs".to_string()],
+            imported_by: vec![],
+            contained_symbols: vec![],
+        };
+        let mut buf = Vec::new();
+        QueryFormat::Markdown
+            .render_context(&payload, Some("src/main.rs"), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("# Context: src/main.rs::main (Function)"));
+        assert!(out.contains("## Signature"));
+        assert!(out.contains("```rust"));
+        assert!(out.contains("## Call Graph"));
+        assert!(out.contains("### Callers"));
+        assert!(out.contains("src/lib.rs::init"));
+        assert!(out.contains("## File Dependencies"));
+        assert!(out.contains("src/lib.rs"));
     }
 }

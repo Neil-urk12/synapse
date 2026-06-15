@@ -292,22 +292,34 @@ fn main() {
     }
 }
 
+/// Open a Database + Connection at `db_path` and pass the connection to `f`.
+/// Used by the read-only query handlers, all of which share the same
+/// open-DB / open-connection shape. The Database is dropped when `f` returns.
+fn with_db<F>(db_path: &Path, f: F) -> Result<(), Box<dyn Error>>
+where
+    F: FnOnce(&Connection) -> Result<(), Box<dyn Error>>,
+{
+    let db = Database::new(db_path, SystemConfig::default())?;
+    let conn = Connection::new(&db)?;
+    f(&conn)
+}
+
 fn handle_callers(
     symbol: &str,
     exact: bool,
     format: &str,
     db_path: &Path,
 ) -> Result<(), Box<dyn Error>> {
-    let db = Database::new(db_path, SystemConfig::default())?;
-    let conn = Connection::new(&db)?;
-    run_call_graph(
-        &conn,
-        symbol,
-        exact,
-        Direction::Callers,
-        QueryFormat::parse(format)?,
-        &mut std::io::stdout(),
-    )
+    with_db(db_path, |conn| {
+        run_call_graph(
+            conn,
+            symbol,
+            exact,
+            Direction::Callers,
+            QueryFormat::parse(format)?,
+            &mut std::io::stdout(),
+        )
+    })
 }
 
 fn handle_callees(
@@ -316,16 +328,16 @@ fn handle_callees(
     format: &str,
     db_path: &Path,
 ) -> Result<(), Box<dyn Error>> {
-    let db = Database::new(db_path, SystemConfig::default())?;
-    let conn = Connection::new(&db)?;
-    run_call_graph(
-        &conn,
-        symbol,
-        exact,
-        Direction::Callees,
-        QueryFormat::parse(format)?,
-        &mut std::io::stdout(),
-    )
+    with_db(db_path, |conn| {
+        run_call_graph(
+            conn,
+            symbol,
+            exact,
+            Direction::Callees,
+            QueryFormat::parse(format)?,
+            &mut std::io::stdout(),
+        )
+    })
 }
 
 fn handle_dependencies(
@@ -334,15 +346,15 @@ fn handle_dependencies(
     format: &str,
     db_path: &Path,
 ) -> Result<(), Box<dyn Error>> {
-    let db = Database::new(db_path, SystemConfig::default())?;
-    let conn = Connection::new(&db)?;
-    run_dependencies(
-        &conn,
-        file,
-        exact,
-        QueryFormat::parse(format)?,
-        &mut std::io::stdout(),
-    )
+    with_db(db_path, |conn| {
+        run_dependencies(
+            conn,
+            file,
+            exact,
+            QueryFormat::parse(format)?,
+            &mut std::io::stdout(),
+        )
+    })
 }
 
 fn handle_context(
@@ -352,16 +364,16 @@ fn handle_context(
     format: &str,
     db_path: &Path,
 ) -> Result<(), Box<dyn Error>> {
-    let db = Database::new(db_path, SystemConfig::default())?;
-    let conn = Connection::new(&db)?;
-    run_context(
-        &conn,
-        symbol,
-        file,
-        fuzzy,
-        QueryFormat::parse_for_context(format)?,
-        &mut std::io::stdout(),
-    )
+    with_db(db_path, |conn| {
+        run_context(
+            conn,
+            symbol,
+            file,
+            fuzzy,
+            QueryFormat::parse_for_context(format)?,
+            &mut std::io::stdout(),
+        )
+    })
 }
 
 #[cfg(test)]

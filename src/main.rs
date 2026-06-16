@@ -4,7 +4,9 @@ pub mod embedder;
 pub mod file_utils;
 pub mod index;
 pub mod linker;
+pub mod pagerank;
 pub mod parser;
+pub mod rank;
 pub mod processor;
 pub mod query;
 pub mod resolver;
@@ -169,6 +171,24 @@ enum Commands {
         #[arg(long, default_value = "markdown")]
         format: String,
     },
+    /// List top symbols by PageRank over the CALLS graph
+    Rank {
+        /// Path to the LadybugDB database storage file
+        #[arg(short, long, default_value = "synapse.lbug")]
+        db: PathBuf,
+
+        /// Number of symbols to return
+        #[arg(short, long, default_value = "10")]
+        top: usize,
+
+        /// Filter by Symbol kind (Function, Method, Struct, Class, Interface, Trait)
+        #[arg(long)]
+        kind: Option<String>,
+
+        /// Output format: markdown or json
+        #[arg(long, default_value = "markdown")]
+        format: String,
+    },
     /// Watch for file changes and automatically re-index
     Watch {
         /// Path to the codebase directory to watch
@@ -277,6 +297,17 @@ fn main() {
             format,
         } => {
             if let Err(err) = similar::handle_similar(&query, &db, limit, threshold, &format) {
+                eprintln!("Error: {}", err);
+                std::process::exit(1);
+            }
+        }
+        Commands::Rank {
+            db,
+            top,
+            kind,
+            format,
+        } => {
+            if let Err(err) = rank::handle_rank(&db, top, kind.as_deref(), &format) {
                 eprintln!("Error: {}", err);
                 std::process::exit(1);
             }
@@ -516,6 +547,32 @@ mod tests {
                 assert_eq!(format, "json");
             }
             _ => panic!("Expected Similar variant"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parsing_rank() {
+        let args = vec![
+            "synapse",
+            "rank",
+            "-d",
+            "test_db.lbug",
+            "--top",
+            "20",
+            "--kind",
+            "Function",
+            "--format",
+            "json",
+        ];
+        let parsed = Cli::try_parse_from(args).unwrap();
+        match parsed.command {
+            Commands::Rank { db, top, kind, format } => {
+                assert_eq!(db, PathBuf::from("test_db.lbug"));
+                assert_eq!(top, 20);
+                assert_eq!(kind, Some("Function".to_string()));
+                assert_eq!(format, "json");
+            }
+            _ => panic!("Expected Rank variant"),
         }
     }
 

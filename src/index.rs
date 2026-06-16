@@ -391,6 +391,17 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
         eprintln!("Error: Global linking phase failed: {}", err);
         std::process::exit(1);
     }
+
+    // PageRank needs a connection that sees the writer thread's commits.
+    // The main-thread `conn` was opened before the writer and uses a snapshot
+    // that excludes those writes, so we open a fresh connection here.
+    if let Ok(pr_db) = Database::new(&db_path, SystemConfig::default()) {
+        if let Ok(pr_conn) = Connection::new(&pr_db) {
+            if let Err(err) = crate::pagerank::compute_and_store_pagerank(&pr_conn, verbose) {
+                eprintln!("Warning: PageRank computation failed: {}", err);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

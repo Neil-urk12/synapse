@@ -176,6 +176,15 @@ pub fn run_watch(path: &Path, db_path: &Path, debounce_secs: u64, verbose: bool)
                 if let Err(err) = crate::linker::run_linker(&conn, verbose) {
                     eprintln!("Warning: Linker error: {}", err);
                 }
+                // Open a fresh connection for PageRank so it sees the writer
+                // thread's commits (same snapshot issue as in run_index).
+                if let Ok(pr_db) = Database::new(db_path, SystemConfig::default()) {
+                    if let Ok(pr_conn) = Connection::new(&pr_db) {
+                        if let Err(err) = crate::pagerank::compute_and_store_pagerank(&pr_conn, verbose) {
+                            eprintln!("Warning: PageRank computation failed: {}", err);
+                        }
+                    }
+                }
                 if !verbose {
                     println!("  Updated {} files (batch #{})", pending.len(), batch_count);
                 }

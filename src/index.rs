@@ -387,19 +387,29 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
     );
     println!("==================================================");
 
-    if let Err(err) = crate::linker::run_linker(&conn, verbose) {
-        eprintln!("Error: Global linking phase failed: {}", err);
-        std::process::exit(1);
-    }
-
-    // PageRank needs a connection that sees the writer thread's commits.
-    // The main-thread `conn` was opened before the writer and uses a snapshot
-    // that excludes those writes, so we open a fresh connection here.
-    if let Ok(pr_db) = Database::new(&db_path, SystemConfig::default()) {
-        if let Ok(pr_conn) = Connection::new(&pr_db) {
-            if let Err(err) = crate::pagerank::compute_and_store_pagerank(&pr_conn, verbose) {
-                eprintln!("Warning: PageRank computation failed: {}", err);
+    // The post-writer phases (linker + pagerank) need a connection that sees
+    // the writer thread's commits. The main-thread `conn` was opened before
+    // the writer and uses a snapshot that excludes those writes, so we open a
+    // fresh connection here and share it between both phases.
+    match Database::new(&db_path, SystemConfig::default()) {
+        Ok(fresh_db) => match Connection::new(&fresh_db) {
+            Ok(fresh_conn) => {
+                if let Err(err) = crate::linker::run_linker(&fresh_conn, verbose) {
+                    eprintln!("Error: Global linking phase failed: {}", err);
+                    std::process::exit(1);
+                }
+                if let Err(err) = crate::pagerank::compute_and_store_pagerank(&fresh_conn, verbose) {
+                    eprintln!("Warning: PageRank computation failed: {}", err);
+                }
             }
+            Err(err) => {
+                eprintln!("Error: Could not open fresh DB connection: {}", err);
+                std::process::exit(1);
+            }
+        },
+        Err(err) => {
+            eprintln!("Error: Could not open fresh DB: {}", err);
+            std::process::exit(1);
         }
     }
 }

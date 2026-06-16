@@ -173,14 +173,16 @@ pub fn run_watch(path: &Path, db_path: &Path, debounce_secs: u64, verbose: bool)
                 if verbose {
                     println!("  [batch #{}] Relinking...", batch_count);
                 }
-                if let Err(err) = crate::linker::run_linker(&conn, verbose) {
-                    eprintln!("Warning: Linker error: {}", err);
-                }
-                // Open a fresh connection for PageRank so it sees the writer
-                // thread's commits (same snapshot issue as in run_index).
-                if let Ok(pr_db) = Database::new(db_path, SystemConfig::default()) {
-                    if let Ok(pr_conn) = Connection::new(&pr_db) {
-                        if let Err(err) = crate::pagerank::compute_and_store_pagerank(&pr_conn, verbose) {
+                // Open a fresh connection for the post-writer phases. The main
+                // `conn` was opened before the writer and uses a snapshot that
+                // excludes its commits; the linker and pagerank need a fresh
+                // view to see the latest data.
+                if let Ok(fresh_db) = Database::new(db_path, SystemConfig::default()) {
+                    if let Ok(fresh_conn) = Connection::new(&fresh_db) {
+                        if let Err(err) = crate::linker::run_linker(&fresh_conn, verbose) {
+                            eprintln!("Warning: Linker error: {}", err);
+                        }
+                        if let Err(err) = crate::pagerank::compute_and_store_pagerank(&fresh_conn, verbose) {
                             eprintln!("Warning: PageRank computation failed: {}", err);
                         }
                     }

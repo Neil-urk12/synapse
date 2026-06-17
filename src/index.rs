@@ -398,7 +398,8 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
                     eprintln!("Error: Global linking phase failed: {}", err);
                     std::process::exit(1);
                 }
-                if let Err(err) = crate::pagerank::compute_and_store_pagerank(&fresh_conn, verbose) {
+                if let Err(err) = crate::pagerank::compute_and_store_pagerank(&fresh_conn, verbose)
+                {
                     eprintln!("Warning: PageRank computation failed: {}", err);
                 }
             }

@@ -154,11 +154,7 @@ mod tests {
         edges.insert(2, vec![0]);
         let scores = power_iterate(3, &edges, 0.85, 1e-6, 100);
         let sum: f64 = scores.iter().sum();
-        assert!(
-            approx_eq(sum, 1.0, 1e-4),
-            "expected sum=1.0, got {}",
-            sum
-        );
+        assert!(approx_eq(sum, 1.0, 1e-4), "expected sum=1.0, got {}", sum);
     }
 
     #[test]

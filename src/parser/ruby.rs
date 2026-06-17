@@ -20,6 +20,7 @@ impl LanguageParser for RubyParser {
                 calls,
             };
         }
+        crate::parser::apply_timeout(&mut parser);
         let tree = match parser.parse(content, None) {
             Some(t) => t,
             None => {

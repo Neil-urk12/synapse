@@ -3,6 +3,7 @@ use std::io::Read;
 use std::path::Path;
 
 use crate::file_utils;
+use crate::parser::MAX_PARSE_BYTES;
 use crate::parser::{language_from_path, ASTParser};
 use crate::types::db::ParsedPayload;
 
@@ -39,13 +40,29 @@ pub fn process_file(
     }
 
     let language = file_utils::detect_language(abs_path);
-    let size = match std::fs::metadata(abs_path) {
-        Ok(m) => m.len(),
-        Err(err) => {
-            eprintln!("Warning: Cannot stat '{}': {}", relative_path, err);
-            0
-        }
-    };
+    // Fail visibly on stat errors so a transient I/O issue doesn't get
+    // masked as size=0 (which would bypass the MAX_PARSE_BYTES guard).
+    // Callers (index.rs, watch.rs) log the warning and continue.
+    let metadata = std::fs::metadata(abs_path).map_err(|err| {
+        eprintln!("Warning: Cannot stat '{}': {}", relative_path, err);
+        err
+    })?;
+    let size = metadata.len();
+
+    if size > MAX_PARSE_BYTES {
+        eprintln!(
+            "Warning: skipping parse of '{}' ({} bytes exceeds {} byte limit)",
+            relative_path, size, MAX_PARSE_BYTES
+        );
+        return Ok(Some(ParsedPayload {
+            relative_path,
+            language,
+            size,
+            hash,
+            analysis: None,
+            content: None,
+        }));
+    }
 
     let (analysis, content) = match (language_from_path(abs_path), std::fs::File::open(abs_path)) {
         (Some(_), Ok(mut file)) => {
@@ -229,5 +246,33 @@ mod tests {
                 edge.from_id,
             );
         }
+    }
+
+    /// Files larger than `MAX_PARSE_BYTES` are skipped before being read or
+    /// parsed. The file still becomes a `File` node (no `Symbol`s, no
+    /// `Chunk`s, no stored content) so the indexer can list it; this
+    /// mirrors the graceful-degradation pattern used for unparseable files.
+    /// `process_file` writes the size-cap warning to stderr itself; we don't
+    /// capture it here.
+    #[test]
+    fn test_process_file_skips_oversized_file() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("big.rs");
+        // 6 MiB of filler — one byte over the 5 MiB cap.
+        let oversize = vec![b'a'; 6 * 1024 * 1024];
+        fs::write(&file, &oversize).unwrap();
+
+        let cache = HashMap::new();
+        let result = process_file(&file, dir.path(), &cache).unwrap();
+        let payload = result.expect("Oversized file should still be indexed (no Symbols)");
+
+        assert!(
+            payload.analysis.is_none(),
+            "Oversized file must not produce an analysis"
+        );
+        assert!(
+            payload.content.is_none(),
+            "Oversized file must not store its content"
+        );
     }
 }

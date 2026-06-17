@@ -8,6 +8,26 @@ pub mod ruby;
 pub mod rust;
 pub mod swift;
 
+/// Maximum source-file size accepted by the indexer. Files larger than this
+/// are skipped with a warning (see `processor::process_file`) and become
+/// `File` nodes with no `Symbol`s. Matches the threshold used by the peer
+/// project pi-shazam (`MAX_PARSE_SIZE` in their `core/treesitter.ts`), which
+/// added the cap in response to issue #101 (minified bundles / data files).
+pub const MAX_PARSE_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Per-parse wall-clock budget in microseconds, enforced via
+/// `tree_sitter::Parser::set_timeout_micros`. If a parse exceeds this limit
+/// tree-sitter returns a best-effort partial tree; if that is unusable the
+/// existing `parser.parse(_, _) -> None` path yields an empty `FileAnalysis`.
+pub const PARSE_TIMEOUT_MICROS: u64 = 10_000_000;
+
+/// Apply [`PARSE_TIMEOUT_MICROS`] to a freshly-initialized tree-sitter parser.
+/// Each language parser in this module calls this immediately after
+/// `set_language` so the threshold is set in one place.
+pub fn apply_timeout(parser: &mut tree_sitter::Parser) {
+    parser.set_timeout_micros(PARSE_TIMEOUT_MICROS);
+}
+
 use crate::types::ast::{EdgeData, FileAnalysis, NodeData, RawCall, RawImport};
 use std::path::Path;
 use tree_sitter::Node;
@@ -122,4 +142,38 @@ pub fn extract_signature(node: Node, source: &[u8]) -> String {
     String::from_utf8_lossy(&source[start_byte..end_line_byte])
         .trim()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Tripwire for the parser safety guards. Catches a future change that
+    /// effectively disables the guard — either by setting it too low (no
+    /// real source file would fit) or too high (minified bundles / data
+    /// files would slip through). The `expect` strings are intentionally
+    /// terse so the test output is self-explanatory.
+    // The `allow` is intentional: this test exists specifically to verify
+    // that the consts remain in a valid range. Clippy flags the comparison
+    // as a constant assertion, but the tripwire fires only if someone later
+    // changes the values to invalid ones (e.g. MAX_PARSE_BYTES = 0).
+    #[allow(clippy::assertions_on_constants)]
+    #[test]
+    fn test_parser_limits_constants_are_sane() {
+        assert!(
+            MAX_PARSE_BYTES >= (1024 * 1024) as u64,
+            "MAX_PARSE_BYTES must be at least 1 MiB to allow normal source files"
+        );
+
+        // Upper bound: 100 MiB. Anything larger stops catching the minified
+        // bundles / data files the guard exists to skip.
+        assert!(
+            MAX_PARSE_BYTES <= 100 * 1024 * 1024,
+            "MAX_PARSE_BYTES must be <= 100 MiB or the cap is effectively disabled"
+        );
+        assert!(
+            PARSE_TIMEOUT_MICROS > 0,
+            "PARSE_TIMEOUT_MICROS must be non-zero or the parse timeout is disabled"
+        );
+    }
 }

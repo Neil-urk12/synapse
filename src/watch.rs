@@ -182,7 +182,9 @@ pub fn run_watch(path: &Path, db_path: &Path, debounce_secs: u64, verbose: bool)
                         if let Err(err) = crate::linker::run_linker(&fresh_conn, verbose) {
                             eprintln!("Warning: Linker error: {}", err);
                         }
-                        if let Err(err) = crate::pagerank::compute_and_store_pagerank(&fresh_conn, verbose) {
+                        if let Err(err) =
+                            crate::pagerank::compute_and_store_pagerank(&fresh_conn, verbose)
+                        {
                             eprintln!("Warning: PageRank computation failed: {}", err);
                         }
                     }

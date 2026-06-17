@@ -6,9 +6,9 @@ pub mod index;
 pub mod linker;
 pub mod pagerank;
 pub mod parser;
-pub mod rank;
 pub mod processor;
 pub mod query;
+pub mod rank;
 pub mod resolver;
 pub mod schema;
 pub mod similar;
@@ -566,7 +566,12 @@ mod tests {
         ];
         let parsed = Cli::try_parse_from(args).unwrap();
         match parsed.command {
-            Commands::Rank { db, top, kind, format } => {
+            Commands::Rank {
+                db,
+                top,
+                kind,
+                format,
+            } => {
                 assert_eq!(db, PathBuf::from("test_db.lbug"));
                 assert_eq!(top, 20);
                 assert_eq!(kind, Some("Function".to_string()));

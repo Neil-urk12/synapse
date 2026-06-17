@@ -60,11 +60,7 @@ pub fn handle_rank(
         .into_iter()
         .enumerate()
         .map(|(i, (id, name, kind, score))| {
-            let file_path = id
-                .split("::")
-                .next()
-                .unwrap_or(&id)
-                .to_string();
+            let file_path = id.split("::").next().unwrap_or(&id).to_string();
             (i + 1, name, kind, file_path, score)
         })
         .collect();
@@ -96,7 +92,12 @@ fn print_json(rows: &[(usize, String, String, String, f64)]) {
         let comma = if i + 1 < rows.len() { "," } else { "" };
         println!(
             "  {{\"rank\":{},\"symbol\":{},\"kind\":{},\"file\":{},\"score\":{:.6}}}{}",
-            rank, json_str(name), json_str(kind), json_str(file), score, comma
+            rank,
+            json_str(name),
+            json_str(kind),
+            json_str(file),
+            score,
+            comma
         );
     }
     println!("]");

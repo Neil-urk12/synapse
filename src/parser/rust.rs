@@ -275,6 +275,7 @@ pub fn expand_rust_import(path: &str) -> Vec<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)] // test fixtures assert expected nodes
 mod tests {
     use super::*;
     use crate::parser::ASTParser;

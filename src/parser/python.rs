@@ -264,6 +264,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)] // test fixtures assert expected nodes
 mod tests {
     use super::*;
     use crate::parser::ASTParser;

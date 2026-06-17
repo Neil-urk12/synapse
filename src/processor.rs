@@ -89,6 +89,7 @@ pub fn process_file(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)] // test fixtures assert expected behaviour
 mod tests {
     use super::*;
     use std::fs;

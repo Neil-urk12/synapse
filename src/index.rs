@@ -1,3 +1,7 @@
+// CLI command — stdout is the output. Migrating to `tracing` is tracked
+// in `docs/audits/2026-06-15-rust-best-practices-audit.md` Finding 12.
+#![allow(clippy::print_stdout)]
+
 use ignore::WalkBuilder;
 use lbug::{Connection, Database, SystemConfig, Value};
 use std::collections::HashMap;
@@ -132,6 +136,12 @@ pub fn write_payload_to_db(
     Ok(())
 }
 
+// Prepared statements parse hardcoded Cypher constants; failure indicates
+// a bug in the constants themselves, not a runtime condition. Per the
+// audit doc (Finding 4), `expect` is acceptable when failure is impossible.
+// Also allow `expect_used` for the writer thread join below, which is the
+// audit's documented exception for join-handle panic propagation.
+#[allow(clippy::expect_used)]
 pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
     println!("==================================================");
     println!("⚡ Synapse Indexer Initializing");
@@ -253,6 +263,9 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
             }
         };
 
+        // Prepared statements parse hardcoded Cypher constants; failure indicates
+        // a bug in the constants themselves, not a runtime condition. Per the
+        // audit doc (Finding 4), `expect` is acceptable when failure is impossible.
         let mut prepared_file_upsert = conn
             .prepare(FILE_UPSERT_CYPHER)
             .expect("Bug: file_upsert prepare failed (hardcoded Cypher)");
@@ -302,7 +315,7 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
     let abs_db_path = db_path
         .canonicalize()
         .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(&db_path));
-    let path_clone = path.clone();
+    let path_clone = path;
 
     let skip_count_atomic = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let skip_count_atomic_clone = skip_count_atomic.clone();

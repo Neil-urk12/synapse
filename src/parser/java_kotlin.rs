@@ -410,6 +410,7 @@ fn traverse_kotlin(node: Node, ctx: &mut TraverseContext, current_parent_id: Opt
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)] // test fixtures assert expected nodes
 mod tests {
     use super::*;
     use crate::parser::ASTParser;

@@ -467,6 +467,7 @@ fn handle_context(
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)] // test exhaustiveness checks
 mod tests {
     use super::*;
 

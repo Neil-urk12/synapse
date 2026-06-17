@@ -1,3 +1,7 @@
+// CLI command — stdout is the output. Migrating to `tracing` is tracked
+// in `docs/audits/2026-06-15-rust-best-practices-audit.md` Finding 12.
+#![allow(clippy::print_stdout)]
+
 use crate::resolver::{self};
 use crate::types::db::{FileRecord, SymbolRecord};
 use lbug::{Connection, Value};

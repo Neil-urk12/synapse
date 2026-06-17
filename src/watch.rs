@@ -1,3 +1,7 @@
+// CLI command — stdout is the output. Migrating to `tracing` is tracked
+// in `docs/audits/2026-06-15-rust-best-practices-audit.md` Finding 12.
+#![allow(clippy::print_stdout)]
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -528,7 +532,7 @@ mod tests {
 
         // Second pass -- file hasn't changed
         let mut paths2 = HashSet::new();
-        paths2.insert(file_path.clone());
+        paths2.insert(file_path);
         process_batch(&conn, &dir, &paths2, false).unwrap();
 
         // Hash should be same (file not re-processed)
@@ -561,7 +565,7 @@ mod tests {
         // Delete file and re-run batch
         std::fs::remove_file(&file_path).unwrap();
         let mut paths2 = HashSet::new();
-        paths2.insert(file_path.clone());
+        paths2.insert(file_path);
         process_batch(&conn, &dir, &paths2, false).unwrap();
 
         // File should be removed from DB
@@ -595,7 +599,7 @@ mod tests {
 
         // Re-index
         let mut paths2 = HashSet::new();
-        paths2.insert(file_path.clone());
+        paths2.insert(file_path);
         process_batch(&conn, &dir, &paths2, false).unwrap();
         let hash_new = get_cached_hash(&conn, "lib.rs").unwrap().unwrap();
 

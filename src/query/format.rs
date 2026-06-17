@@ -1,3 +1,4 @@
+use crate::impact::ImpactRow;
 use crate::types::query::{CallerInfo, ContextPayload, FileInfo, SymbolInfo};
 use std::io::Write;
 
@@ -286,6 +287,76 @@ impl QueryFormat {
         }
         Ok(())
     }
+    /// Render an impact result (transitive callers of a target symbol).
+    /// `target_id` is included in the markdown heading and as a JSON key.
+    pub fn render_impact(
+        &self,
+        target_id: &str,
+        rows: &[ImpactRow],
+        writer: &mut dyn Write,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        match self {
+            QueryFormat::Json => {
+                let json_val = serde_json::json!({
+                    "target": target_id,
+                    "impact": rows,
+                });
+                writeln!(writer, "{}", serde_json::to_string_pretty(&json_val)?)?;
+            }
+            QueryFormat::Markdown => {
+                writeln!(
+                    writer,
+                    "# Impact of `{}` ({} transitive callers)",
+                    target_id,
+                    rows.len()
+                )?;
+                if rows.is_empty() {
+                    writeln!(
+                        writer,
+                        "\nNo symbols transitively depend on `{}`.",
+                        target_id
+                    )?;
+                } else {
+                    writeln!(writer)?;
+                    writeln!(
+                        writer,
+                        "| Rank | Symbol | Kind | File:Line | Depth | PageRank |"
+                    )?;
+                    writeln!(
+                        writer,
+                        "|------|--------|------|-----------|-------|----------|"
+                    )?;
+                    for r in rows {
+                        writeln!(
+                            writer,
+                            "| {} | `{}` | {} | `{}:{}` | {} | {} |",
+                            r.rank,
+                            r.name,
+                            r.kind,
+                            r.file,
+                            r.start_line,
+                            r.depth,
+                            match r.pagerank {
+                                Some(p) => format!("{:.4}", p),
+                                None => "—".to_string(),
+                            }
+                        )?;
+                    }
+                }
+            }
+            QueryFormat::Table => {
+                // `impact` is reachable from `QueryFormat::parse` (which accepts
+                // "table") but `render_impact` is intentionally a markdown/json
+                // feature — Table doesn't compose with the depth/PageRank columns
+                // meaningfully. Reject explicitly.
+                return Err(
+                    "render_impact does not support the 'table' format; use markdown or json"
+                        .into(),
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 fn syntax_for_path(path: &str) -> &'static str {
@@ -494,5 +565,117 @@ mod tests {
         assert!(out.contains("src/lib.rs::init"));
         assert!(out.contains("## File Dependencies"));
         assert!(out.contains("src/lib.rs"));
+    }
+
+    fn make_impact_row(
+        id: &str,
+        name: &str,
+        kind: &str,
+        file: &str,
+        line: usize,
+        depth: usize,
+        pagerank: Option<f64>,
+    ) -> ImpactRow {
+        ImpactRow {
+            rank: 1,
+            id: id.to_string(),
+            name: name.to_string(),
+            kind: kind.to_string(),
+            file: file.to_string(),
+            start_line: line,
+            depth,
+            pagerank,
+        }
+    }
+
+    #[test]
+    fn test_render_impact_json() {
+        let target = "src/main.rs::main";
+        let rows = vec![make_impact_row(
+            "src/lib.rs::init",
+            "init",
+            "Function",
+            "src/lib.rs",
+            5,
+            1,
+            Some(0.0421),
+        )];
+        let mut buf = Vec::new();
+        QueryFormat::Json
+            .render_impact(target, &rows, &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("\"target\""));
+        assert!(out.contains("src/main.rs::main"));
+        assert!(out.contains("src/lib.rs::init"));
+        assert!(out.contains("0.0421"));
+    }
+
+    #[test]
+    fn test_render_impact_markdown_with_rows() {
+        let target = "src/main.rs::main";
+        let rows = vec![make_impact_row(
+            "src/lib.rs::init",
+            "init",
+            "Function",
+            "src/lib.rs",
+            5,
+            1,
+            Some(0.0421),
+        )];
+        let mut buf = Vec::new();
+        QueryFormat::Markdown
+            .render_impact(target, &rows, &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("# Impact of `src/main.rs::main`"));
+        assert!(out.contains("(1 transitive callers)"));
+        assert!(out.contains("| Rank | Symbol |"));
+        assert!(out.contains("`init`"));
+        assert!(out.contains("0.0421"));
+    }
+
+    #[test]
+    fn test_render_impact_markdown_empty() {
+        let target = "src/orphan.rs::lonely";
+        let rows: Vec<ImpactRow> = vec![];
+        let mut buf = Vec::new();
+        QueryFormat::Markdown
+            .render_impact(target, &rows, &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("No symbols transitively depend on `src/orphan.rs::lonely`"));
+    }
+
+    #[test]
+    fn test_render_impact_markdown_null_pagerank() {
+        let target = "src/x.rs::f";
+        let rows = vec![make_impact_row(
+            "src/y.rs::g",
+            "g",
+            "Function",
+            "src/y.rs",
+            1,
+            1,
+            None,
+        )];
+        let mut buf = Vec::new();
+        QueryFormat::Markdown
+            .render_impact(target, &rows, &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains('—'), "null PageRank rendered as em-dash");
+    }
+
+    #[test]
+    fn test_render_impact_table_rejected() {
+        let rows: Vec<ImpactRow> = vec![];
+        let mut buf = Vec::new();
+        let res = QueryFormat::Table.render_impact("x", &rows, &mut buf);
+        assert!(res.is_err());
+        assert_eq!(
+            res.unwrap_err().to_string(),
+            "render_impact does not support the 'table' format; use markdown or json"
+        );
     }
 }

@@ -2,6 +2,7 @@ pub mod chunker;
 pub mod embed;
 pub mod embedder;
 pub mod file_utils;
+pub mod impact;
 pub mod index;
 pub mod linker;
 pub mod pagerank;
@@ -189,6 +190,28 @@ enum Commands {
         #[arg(long, default_value = "markdown")]
         format: String,
     },
+    /// Show all symbols transitively affected by changes to a target symbol
+    #[command(alias = "blast-radius")]
+    Impact {
+        /// Target symbol name (fuzzy-matched against Symbol.id and Symbol.name)
+        symbol: String,
+
+        /// Path to the LadybugDB database storage file
+        #[arg(short, long, default_value = "synapse.lbug")]
+        db: PathBuf,
+
+        /// Maximum number of impacted symbols to return (after PageRank sort)
+        #[arg(short, long, default_value = "50")]
+        top: usize,
+
+        /// Maximum BFS depth (1 = direct callers only). Omit for unlimited.
+        #[arg(long)]
+        max_depth: Option<usize>,
+
+        /// Output format: markdown or json
+        #[arg(long, default_value = "markdown")]
+        format: String,
+    },
     /// Watch for file changes and automatically re-index
     Watch {
         /// Path to the codebase directory to watch
@@ -312,6 +335,18 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::Impact {
+            symbol,
+            db,
+            top,
+            max_depth,
+            format,
+        } => {
+            if let Err(err) = handle_impact(&symbol, &db, top, max_depth, &format) {
+                eprintln!("Error: {}", err);
+                std::process::exit(1);
+            }
+        }
         Commands::Watch {
             path,
             db,
@@ -333,6 +368,30 @@ where
     let db = Database::new(db_path, SystemConfig::default())?;
     let conn = Connection::new(&db)?;
     f(&conn)
+}
+
+fn handle_impact(
+    symbol: &str,
+    db_path: &Path,
+    top: usize,
+    max_depth: Option<usize>,
+    format: &str,
+) -> Result<(), Box<dyn Error>> {
+    use crate::impact::{run_impact, ImpactOptions};
+    with_db(db_path, |conn| {
+        let opts = ImpactOptions {
+            max_depth,
+            top: Some(top),
+        };
+        match run_impact(conn, symbol, true, &opts) {
+            Ok(rows) => {
+                let qf = QueryFormat::parse(format)?;
+                qf.render_impact(symbol, &rows, &mut std::io::stdout())?;
+                Ok(())
+            }
+            Err(e) => Err(Box::new(e) as Box<dyn Error>),
+        }
+    })
 }
 
 fn handle_callers(
@@ -590,6 +649,50 @@ mod tests {
                 assert_eq!(db, PathBuf::from("test_db.lbug"));
             }
             _ => panic!("Expected Repl variant"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parsing_impact() {
+        let args = vec![
+            "synapse",
+            "impact",
+            "parse_source",
+            "--top",
+            "20",
+            "--format",
+            "json",
+            "--max-depth",
+            "3",
+        ];
+        let parsed = Cli::try_parse_from(args).unwrap();
+        match parsed.command {
+            Commands::Impact {
+                symbol,
+                top,
+                format,
+                max_depth,
+                ..
+            } => {
+                assert_eq!(symbol, "parse_source");
+                assert_eq!(top, 20);
+                assert_eq!(format, "json");
+                assert_eq!(max_depth, Some(3));
+            }
+            _ => panic!("Expected Impact variant"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parsing_impact_blast_radius_alias() {
+        // `blast-radius` is registered as a clap alias for `impact`.
+        let args = vec!["synapse", "blast-radius", "parse_source"];
+        let parsed = Cli::try_parse_from(args).unwrap();
+        match parsed.command {
+            Commands::Impact { symbol, .. } => {
+                assert_eq!(symbol, "parse_source");
+            }
+            _ => panic!("Expected Impact variant via alias"),
         }
     }
 

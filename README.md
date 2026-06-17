@@ -10,7 +10,8 @@ Synapse is a high-performance code intelligence graph database and indexer built
 - **Semantic Search**: Computes vector embeddings (BGE-small-en-v1.5, 384-dim) over code chunks for natural-language similarity search.
 - **Code Chunking**: Segments code by symbol boundaries or sliding windows to prepare for embeddings.
 - **File Watcher**: Watches for file changes and automatically re-indexes with configurable debounce.
-- **Query CLI**: Subcommands for callers, callees, dependencies, context, and raw Cypher queries.
+- **Query CLI**: Subcommands for callers, callees, dependencies, context, blast-radius (`impact`), and raw Cypher queries.
+- **PageRank Scoring**: Ranks symbols by transitive importance over the CALLS graph; surfaces hubs and lets `impact` prioritize affected code.
 - **Interactive REPL**: Shell with history, shortcuts, and raw Cypher query support.
 
 ## Quick Start
@@ -46,6 +47,11 @@ cargo run -- deps <file>
 # Get rich code context for a symbol or file
 cargo run -- context --symbol <symbol>
 cargo run -- context --file <file> --format json
+
+# Blast radius: show every symbol that transitively depends on a target,
+# sorted by PageRank. Answers "what breaks if I change this?"
+cargo run -- impact <symbol>
+cargo run -- blast-radius src/foo.rs::bar --format json --top 20
 ```
 
 All query commands support `--exact` for exact matching (default is fuzzy) and `--format` for output in `table`, `markdown`, or `json`.

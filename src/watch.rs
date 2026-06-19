@@ -36,8 +36,19 @@ pub fn run_watch(path: &Path, db_path: &Path, debounce_secs: u64, verbose: bool)
     println!("⚡ Synapse Watcher Starting — full initial index...");
 
     // Phase 1: Full initial index (run_index opens its own DB internally,
-    // and calls run_linker internally)
-    crate::index::run_index(path.to_path_buf(), db_path.to_path_buf(), verbose);
+    // and calls run_linker internally). Auto-registration is enabled so the
+    // initial index populates ~/.synapse/repos.json the same way `synapse index`
+    // does; subsequent watch batches update the DB only and never re-register.
+    if let Err(err) = crate::index::run_index(
+        path.to_path_buf(),
+        db_path.to_path_buf(),
+        verbose,
+        false,
+        false,
+    ) {
+        eprintln!("Error: Initial index failed: {}", err);
+        std::process::exit(1);
+    }
 
     // Phase 2: Open persistent connection for watch loop
     let db = match Database::new(db_path, SystemConfig::default()) {

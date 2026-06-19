@@ -5,6 +5,7 @@ pub mod file_utils;
 pub mod impact;
 pub mod index;
 pub mod linker;
+pub mod mcp;
 pub mod pagerank;
 pub mod parser;
 pub mod processor;
@@ -47,6 +48,14 @@ enum Commands {
         /// Enable verbose logging output
         #[arg(short, long)]
         verbose: bool,
+
+        /// Skip auto-registration of this repo in ~/.synapse/repos.json
+        #[arg(long)]
+        no_register: bool,
+
+        /// Overwrite an existing registration under a different name for the same path
+        #[arg(long)]
+        force_register: bool,
     },
     /// Execute a raw Cypher query against the code graph
     Query {
@@ -230,6 +239,17 @@ enum Commands {
         #[arg(short, long)]
         verbose: bool,
     },
+    /// Start a Model Context Protocol (MCP) server over stdio for AI agents
+    Mcp {
+        /// Print a one-line status report for every indexed repo and exit.
+        /// Useful as a sanity check from an editor's startup hook.
+        #[arg(long)]
+        status: bool,
+
+        /// Per-tool invocation timeout in seconds. Default: 30.
+        #[arg(long, default_value_t = 30)]
+        tool_timeout: u64,
+    },
 }
 
 fn main() {
@@ -240,8 +260,13 @@ fn main() {
             path,
             db: db_path,
             verbose,
+            no_register,
+            force_register,
         } => {
-            index::run_index(path, db_path, verbose);
+            if let Err(err) = index::run_index(path, db_path, verbose, no_register, force_register) {
+                eprintln!("Error: {}", err);
+                std::process::exit(1);
+            }
         }
         Commands::Query { query, db } => {
             if let Err(err) = query::handle_query(&query, &db) {
@@ -354,6 +379,29 @@ fn main() {
             verbose,
         } => {
             watch::run_watch(&path, &db, debounce, verbose);
+        }
+        Commands::Mcp { status, tool_timeout } => {
+            let args = crate::mcp::server::McpArgs {
+                status,
+                tool_timeout_secs: tool_timeout,
+            };
+            // The MCP server is async; build a small runtime in-process so
+            // the rest of `main()` stays synchronous. Falls back to
+            // `exit(1)` on any startup error (logged to stderr).
+            let rt = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    eprintln!("Error: failed to build tokio runtime: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            if let Err(err) = rt.block_on(crate::mcp::server::run(args)) {
+                eprintln!("Error: {}", err);
+                std::process::exit(1);
+            }
         }
     }
 }

@@ -53,6 +53,34 @@ indicatif = "0.17"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
+# Error enum derives for the MCP registry and other domain modules
+thiserror = "2"
+
+# Catch-all error type used at the MCP wire boundary. Lets `map_domain_error`
+# downcast through `McpToolError`, `RegistryError`, and `CandidateError` in
+# one chain. Internal code paths still use `thiserror`-typed enums and
+# `Box<dyn Error>` — anyhow is confined to `src/mcp/errors.rs` and the mcp
+# module's wire-layer error coercion.
+anyhow = "1"
+
+# Model Context Protocol server (stdio transport)
+rmcp = { version = "0.8", features = ["server", "macros", "transport-io"] }
+
+# `async fn` in dyn-safe traits. We use this on the internal `McpTool` trait
+# in `src/mcp/tools.rs`; rmcp's own trait wrappers go through its macros.
+async-trait = "0.1"
+
+# Async runtime. Pulled in transitively by `rmcp`, but declared here because
+# the MCP server's `mcp::run` builds its own `tokio::runtime::Runtime` and uses
+# `tokio::time::timeout` for per-tool timeouts.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+
+# Minimal chrono for UTC RFC3339 timestamps written to ~/.synapse/repos.json.
+# `std` is required alongside `clock` because `DateTime::to_rfc3339` is gated on
+# `alloc` or `std`; default features (wasmbind, oldtime, iana-time-zone) are
+# unnecessary for this use case.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
 [lints.clippy]
 # Correctness / performance: catch real bugs in the DB / index hot path.
 redundant_clone = "warn"
@@ -75,4 +103,3 @@ panic = "warn"
 
 [dev-dependencies]
 tempfile = "3"
-

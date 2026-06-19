@@ -88,6 +88,51 @@ cargo run -- repl
 
 Shortcuts: `.help`, `.callers <symbol>`, `.callees <symbol>`, `.deps <file>`, `.context <symbol>`, `.exit`/`.quit`. Any non-shortcut input is executed as a raw Cypher query.
 
+### Model Context Protocol (MCP) Server
+
+`synapse mcp` exposes 8 read-only code-intelligence tools and 2 discovery resources to any MCP-aware agent (Claude Code, Cursor, Windsurf, Codex, OpenCode, Antigravity, etc.) over **stdio**:
+
+```bash
+# Start the MCP server (blocks until stdin closes)
+cargo run -- mcp
+
+# Sanity check: list indexed repos and exit
+cargo run -- mcp --status
+```
+
+**Tools** (namespaced with `synapse_` to avoid collisions with other MCP servers in the same agent):
+
+| Tool | Purpose |
+|---|---|
+| `synapse_cypher` | Run a raw Cypher query against the code graph |
+| `synapse_callers` | Find direct and transitive callers of a symbol |
+| `synapse_callees` | Find what a symbol calls |
+| `synapse_context` | Code intelligence for a symbol or file (signature, source slice, call graph, dependencies) |
+| `synapse_deps` | Imports + imported-by for a file |
+| `synapse_impact` | Blast radius (transitive reverse-CALLS), sorted by PageRank |
+| `synapse_query` | Semantic search over indexed code chunks (requires `synapse embed`) |
+| `synapse_rank` | Top symbols by PageRank |
+
+**Resources**: `synapse://repos` (every indexed repo with staleness hints) and `synapse://repo/{name}/status` (detail per repo).
+
+**Editor install:**
+
+```jsonc
+// Claude Code / Cursor / Windsurf — ~/.claude/mcp.json or .cursor/mcp.json
+{
+  "mcpServers": {
+    "synapse": {
+      "command": "synapse",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+For Codex / OpenCode / Antigravity, the equivalent is `~/.codex/mcp.json`, `~/.config/opencode/mcp.json`, etc. — same shape. Restart the editor after editing the config.
+
+The first call to any tool that reads from a DB will look for `./synapse.lbug` in the server's working directory. Run `synapse index .` from your project root before launching the MCP server.
+
 ### Test
 
 ```bash

@@ -142,7 +142,13 @@ pub fn write_payload_to_db(
 // Also allow `expect_used` for the writer thread join below, which is the
 // audit's documented exception for join-handle panic propagation.
 #[allow(clippy::expect_used)]
-pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
+pub fn run_index(
+    path: PathBuf,
+    db_path: PathBuf,
+    verbose: bool,
+    no_register: bool,
+    force_register: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("==================================================");
     println!("⚡ Synapse Indexer Initializing");
     println!("==================================================");
@@ -155,14 +161,18 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
             "Error: Target workspace path '{}' does not exist.",
             path.display()
         );
-        std::process::exit(1);
+        return Err(format!(
+            "Target workspace path '{}' does not exist.",
+            path.display()
+        )
+        .into());
     }
 
     if let Some(parent) = db_path.parent() {
         if !parent.as_os_str().is_empty() && !parent.exists() {
             if let Err(err) = std::fs::create_dir_all(parent) {
                 eprintln!("Error: Failed to create database path directory: {}", err);
-                std::process::exit(1);
+                return Err(Box::new(err));
             }
         }
     }
@@ -176,7 +186,7 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
                 db_path.display(),
                 err
             );
-            std::process::exit(1);
+            return Err(Box::new(err));
         }
     };
 
@@ -184,14 +194,14 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
         Ok(connection) => connection,
         Err(err) => {
             eprintln!("Error: Failed to open database connection: {}", err);
-            std::process::exit(1);
+            return Err(Box::new(err));
         }
     };
 
     println!("🛠️  Verifying graph database schema...");
     if let Err(err) = schema::init_schema(&conn) {
         eprintln!("Error: Failed to verify schema tables: {}", err);
-        std::process::exit(1);
+        return Err(err);
     }
 
     if conn
@@ -204,7 +214,11 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
             db_path.display()
         );
         eprintln!("Please delete the database file and run the indexer again to recreate it.");
-        std::process::exit(1);
+        return Err(format!(
+            "Database at '{}' is incompatible (missing 'raw_imports' column on 'File').",
+            db_path.display()
+        )
+        .into());
     }
     if conn
         .query("MATCH (s:Symbol) RETURN s.raw_calls LIMIT 1")
@@ -216,7 +230,11 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
             db_path.display()
         );
         eprintln!("Please delete the database file and run the indexer again to recreate it.");
-        std::process::exit(1);
+        return Err(format!(
+            "Database at '{}' is incompatible (missing 'raw_calls' column on 'Symbol').",
+            db_path.display()
+        )
+        .into());
     }
 
     let hash_cache = match load_all_hashes(&conn) {
@@ -390,6 +408,50 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
     let byte_count = byte_count_res;
     let skip_count = skip_count_atomic.load(std::sync::atomic::Ordering::SeqCst);
 
+    if !no_register {
+        let repo_path = std::fs::canonicalize(&path_clone).unwrap_or_else(|_| path_clone.clone());
+        let repo_name = repo_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unnamed")
+            .to_string();
+        let db_path_absolute =
+            std::fs::canonicalize(&db_path).unwrap_or_else(|_| db_path.clone());
+        let indexed_commit = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .arg("rev-parse")
+            .arg("HEAD")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        let indexed_at = chrono::Utc::now().to_rfc3339();
+
+        let mut registry = crate::mcp::repo_registry::RepoRegistry::load().unwrap_or_default();
+        let entry = crate::mcp::repo_registry::RepoEntry {
+            name: repo_name,
+            path: repo_path,
+            db_path: db_path_absolute,
+            indexed_at,
+            indexed_commit,
+        };
+        match registry.add_or_update(entry, force_register) {
+            Ok(()) => {
+                registry.save()?;
+            }
+            Err(crate::mcp::repo_registry::RegistryError::DuplicatePath { existing_name, .. }) => {
+                eprintln!(
+                    "warning: path already registered as '{}'; pass --force-register to overwrite",
+                    existing_name
+                );
+            }
+            Err(e) => return Err(Box::new(e)),
+        }
+    }
+
     println!("--------------------------------------------------");
     println!("✅ Workspace traversal complete!");
     println!("Total Files Indexed/Updated    : {}", file_count);
@@ -409,7 +471,7 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
             Ok(fresh_conn) => {
                 if let Err(err) = crate::linker::run_linker(&fresh_conn, verbose) {
                     eprintln!("Error: Global linking phase failed: {}", err);
-                    std::process::exit(1);
+                    return Err(err);
                 }
                 if let Err(err) = crate::pagerank::compute_and_store_pagerank(&fresh_conn, verbose)
                 {
@@ -418,20 +480,26 @@ pub fn run_index(path: PathBuf, db_path: PathBuf, verbose: bool) {
             }
             Err(err) => {
                 eprintln!("Error: Could not open fresh DB connection: {}", err);
-                std::process::exit(1);
+                return Err(Box::new(err));
             }
         },
         Err(err) => {
             eprintln!("Error: Could not open fresh DB: {}", err);
-            std::process::exit(1);
+            return Err(Box::new(err));
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use lbug::{Connection, Database};
+
+    // Serialize tests that mutate the HOME env var (the registry reads
+    // `$HOME/.synapse/repos.json`). Without this, parallel tests race on the
+    // global env and write to each other's tempdirs.
+    static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn with_write_payload_db(f: impl FnOnce(&Connection, &mut PreparedStatements)) {
         let tmp = tempfile::tempdir().unwrap();
@@ -546,13 +614,14 @@ mod tests {
     #[test]
     fn test_walker_bails_after_writer_death() {
         // Smoke test: a workspace with many files + a DB path whose parent
-        // doesn't exist forces Database::new to fail at writer construction.
-        // With the early-bail fix, the walker exits via WalkState::Quit
-        // after observing the writer_alive flag flip; without the fix, the
-        // walker would visit every file and emit a per-file warning.
+        // doesn't exist exercises the writer failure path. With lbug 0.17,
+        // the writer may or may not fail to open the DB depending on the
+        // concurrent-DB-instance policy, so this test no longer asserts a
+        // specific Result variant — it only asserts the function returns
+        // without panicking on the error path.
         //
-        // This test only asserts the run completes; capturing stderr to
-        // count warnings would require plumbing a pluggable writer through
+        // This test asserts the run completes; capturing stderr to count
+        // warnings would require plumbing a pluggable writer through
         // eprintln!, which is out of scope here.
         let workspace = tempfile::tempdir().unwrap();
         for i in 0..50 {
@@ -567,6 +636,115 @@ mod tests {
             .join("definitely_does_not_exist")
             .join("foo.lbug");
 
-        run_index(workspace.path().to_path_buf(), bad_db, false);
+        let _ = run_index(workspace.path().to_path_buf(), bad_db, false, true, false);
+    }
+
+    fn make_git_repo(path: &std::path::Path) {
+        use std::process::Command;
+        Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .arg("init")
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .arg("config")
+            .arg("user.email")
+            .arg("test@example.com")
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .arg("config")
+            .arg("user.name")
+            .arg("Test")
+            .output()
+            .unwrap();
+        std::fs::write(path.join("README.md"), "# Test\n").unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .arg("add")
+            .arg(".")
+            .output()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .arg("commit")
+            .arg("-m")
+            .arg("init")
+            .output()
+            .unwrap();
+    }
+
+    #[test]
+    fn auto_register_after_index_writes_registry_entry() {
+        use crate::mcp::repo_registry::RepoRegistry;
+        let _home_guard = HOME_LOCK.lock().unwrap();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let home_dir = tempfile::tempdir().unwrap();
+        make_git_repo(repo_dir.path());
+
+        // Override HOME so the registry writes into the test tempdir instead
+        // of the user's real ~/.synapse/repos.json.
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", home_dir.path());
+
+        let db = repo_dir.path().join("synapse.lbug");
+        let result = run_index(repo_dir.path().to_path_buf(), db, false, false, false);
+
+        match prev_home {
+            Some(prev) => std::env::set_var("HOME", prev),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert!(result.is_ok(), "index failed: {:?}", result.err());
+
+        let registry_path = home_dir.path().join(".synapse").join("repos.json");
+        assert!(registry_path.exists(), "registry file not created");
+        let registry = RepoRegistry::load_from(&registry_path).unwrap();
+        assert_eq!(registry.entries.len(), 1);
+        let entry = &registry.entries[0];
+        assert!(
+            !entry.indexed_commit.is_empty(),
+            "indexed_commit should be set for git repo"
+        );
+    }
+
+    #[test]
+    fn no_register_flag_skips_registry_write() {
+        use crate::mcp::repo_registry::RepoRegistry;
+        let _home_guard = HOME_LOCK.lock().unwrap();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let home_dir = tempfile::tempdir().unwrap();
+        make_git_repo(repo_dir.path());
+
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", home_dir.path());
+
+        let db = repo_dir.path().join("synapse.lbug");
+        let result = run_index(repo_dir.path().to_path_buf(), db, false, true, false);
+
+        match prev_home {
+            Some(prev) => std::env::set_var("HOME", prev),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert!(result.is_ok(), "index failed: {:?}", result.err());
+
+        let registry_path = home_dir.path().join(".synapse").join("repos.json");
+        assert!(
+            !registry_path.exists(),
+            "registry should not be created when --no-register is passed"
+        );
+        let loaded = RepoRegistry::load();
+        assert!(loaded.is_ok());
+        assert!(loaded.unwrap().entries.is_empty());
     }
 }

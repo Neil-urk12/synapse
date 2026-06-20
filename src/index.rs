@@ -460,31 +460,15 @@ pub fn run_index(
     println!("==================================================");
 
     // The post-writer phases (linker + pagerank) need a connection that sees
-    // the writer thread's commits. The main-thread `conn` was opened before
-    // the writer and uses a snapshot that excludes those writes, so we open a
-    // fresh connection here and share it between both phases.
-    match Database::new(&db_path, SystemConfig::default()) {
-        Ok(fresh_db) => match Connection::new(&fresh_db) {
-            Ok(fresh_conn) => {
-                if let Err(err) = crate::linker::run_linker(&fresh_conn, verbose) {
-                    eprintln!("Error: Global linking phase failed: {}", err);
-                    return Err(err);
-                }
-                if let Err(err) = crate::pagerank::compute_and_store_pagerank(&fresh_conn, verbose)
-                {
-                    eprintln!("Warning: PageRank computation failed: {}", err);
-                }
-            }
-            Err(err) => {
-                eprintln!("Error: Could not open fresh DB connection: {}", err);
-                return Err(Box::new(err));
-            }
-        },
-        Err(err) => {
-            eprintln!("Error: Could not open fresh DB: {}", err);
-            return Err(Box::new(err));
-        }
-    }
+    // the writer thread's commits. `post_index::run` encapsulates the fresh
+    // open and the failure-policy split (FailFast for one-shot `synapse
+    // index`: DB-open and linker errors propagate; pagerank errors only
+    // warn).
+    crate::post_index::run(
+        &db_path,
+        verbose,
+        crate::post_index::PostIndexMode::FailFast,
+    )?;
     Ok(())
 }
 

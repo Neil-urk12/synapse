@@ -188,22 +188,18 @@ pub fn run_watch(path: &Path, db_path: &Path, debounce_secs: u64, verbose: bool)
                 if verbose {
                     println!("  [batch #{}] Relinking...", batch_count);
                 }
-                // Open a fresh connection for the post-writer phases. The main
-                // `conn` was opened before the writer and uses a snapshot that
-                // excludes its commits; the linker and pagerank need a fresh
-                // view to see the latest data.
-                if let Ok(fresh_db) = Database::new(db_path, SystemConfig::default()) {
-                    if let Ok(fresh_conn) = Connection::new(&fresh_db) {
-                        if let Err(err) = crate::linker::run_linker(&fresh_conn, verbose) {
-                            eprintln!("Warning: Linker error: {}", err);
-                        }
-                        if let Err(err) =
-                            crate::pagerank::compute_and_store_pagerank(&fresh_conn, verbose)
-                        {
-                            eprintln!("Warning: PageRank computation failed: {}", err);
-                        }
-                    }
-                }
+                // Run the post-writer pipeline against a fresh DB connection.
+                // `post_index::run` encapsulates the fresh open and the
+                // Resilient failure policy: DB-open failures silently defer
+                // (the watcher retries on the next batch), linker failures
+                // only warn, pagerank failures only warn.
+                // Resilient mode never returns Err; the `let _` keeps the
+                // compiler quiet about the must_use Result.
+                let _ = crate::post_index::run(
+                    db_path,
+                    verbose,
+                    crate::post_index::PostIndexMode::Resilient,
+                );
                 if !verbose {
                     println!("  Updated {} files (batch #{})", pending.len(), batch_count);
                 }

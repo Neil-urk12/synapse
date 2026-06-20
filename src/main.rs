@@ -8,6 +8,7 @@ pub mod linker;
 pub mod mcp;
 pub mod pagerank;
 pub mod parser;
+pub mod post_index;
 pub mod processor;
 pub mod query;
 pub mod rank;

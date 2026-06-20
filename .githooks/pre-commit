@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Pre-commit: enforce formatting and clippy lints.
+# Skips when no Rust files are staged.
+
+set -e
+
+# Bail if cargo isn't installed rather than failing later with a cryptic error.
+command -v cargo >/dev/null 2>&1 || {
+  echo "pre-commit: cargo not found in PATH; skipping rust checks" >&2
+  exit 0
+}
+
+# Only run when something Rust-related is staged.
+if ! git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.(rs|toml)$|^Cargo\.(toml|lock)$'; then
+  exit 0
+fi
+
+echo "pre-commit: cargo fmt --check"
+cargo fmt --all -- --check
+
+echo "pre-commit: cargo clippy"
+cargo clippy --all-targets -- -D warnings

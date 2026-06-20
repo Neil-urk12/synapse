@@ -263,7 +263,8 @@ fn main() {
             no_register,
             force_register,
         } => {
-            if let Err(err) = index::run_index(path, db_path, verbose, no_register, force_register) {
+            if let Err(err) = index::run_index(path, db_path, verbose, no_register, force_register)
+            {
                 eprintln!("Error: {}", err);
                 std::process::exit(1);
             }
@@ -380,7 +381,10 @@ fn main() {
         } => {
             watch::run_watch(&path, &db, debounce, verbose);
         }
-        Commands::Mcp { status, tool_timeout } => {
+        Commands::Mcp {
+            status,
+            tool_timeout,
+        } => {
             let args = crate::mcp::server::McpArgs {
                 status,
                 tool_timeout_secs: tool_timeout,

@@ -161,11 +161,7 @@ pub fn run_index(
             "Error: Target workspace path '{}' does not exist.",
             path.display()
         );
-        return Err(format!(
-            "Target workspace path '{}' does not exist.",
-            path.display()
-        )
-        .into());
+        return Err(format!("Target workspace path '{}' does not exist.", path.display()).into());
     }
 
     if let Some(parent) = db_path.parent() {
@@ -415,8 +411,7 @@ pub fn run_index(
             .and_then(|n| n.to_str())
             .unwrap_or("unnamed")
             .to_string();
-        let db_path_absolute =
-            std::fs::canonicalize(&db_path).unwrap_or_else(|_| db_path.clone());
+        let db_path_absolute = std::fs::canonicalize(&db_path).unwrap_or_else(|_| db_path.clone());
         let indexed_commit = std::process::Command::new("git")
             .arg("-C")
             .arg(&repo_path)
@@ -442,7 +437,9 @@ pub fn run_index(
             Ok(()) => {
                 registry.save()?;
             }
-            Err(crate::mcp::repo_registry::RegistryError::DuplicatePath { existing_name, .. }) => {
+            Err(crate::mcp::repo_registry::RegistryError::DuplicatePath {
+                existing_name, ..
+            }) => {
                 eprintln!(
                     "warning: path already registered as '{}'; pass --force-register to overwrite",
                     existing_name

@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
-    AnnotateAble, CallToolRequestParam, CallToolResult, ListResourcesResult,
-    ListToolsResult, RawResource, ReadResourceRequestParam, ReadResourceResult, ResourceContents,
+    AnnotateAble, CallToolRequestParam, CallToolResult, ListResourcesResult, ListToolsResult,
+    RawResource, ReadResourceRequestParam, ReadResourceResult, ResourceContents,
     ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
 };
 use rmcp::service::ServiceExt;
@@ -22,10 +22,10 @@ use serde_json::Value;
 
 use crate::mcp::errors::map_domain_error;
 use crate::mcp::resources::{read_repo_status, read_repos};
-use crate::mcp::tools::{McpToolError, ToolRegistry};
 use crate::mcp::tool_impls::{
     CalleesTool, CallersTool, ContextTool, CypherTool, DepsTool, ImpactTool, QueryTool, RankTool,
 };
+use crate::mcp::tools::{McpToolError, ToolRegistry};
 
 // ─── CLI args mirror ─────────────────────────────────────────────────────
 
@@ -172,7 +172,9 @@ impl ServerHandler for McpServer {
             uri: "synapse://repos".to_string(),
             name: "repos".to_string(),
             title: Some("Indexed repositories".to_string()),
-            description: Some("Every repo registered in ~/.synapse/repos.json with staleness hints.".to_string()),
+            description: Some(
+                "Every repo registered in ~/.synapse/repos.json with staleness hints.".to_string(),
+            ),
             mime_type: Some("application/json".to_string()),
             size: None,
             icons: None,

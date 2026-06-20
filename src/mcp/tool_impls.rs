@@ -28,8 +28,8 @@ where
 {
     let db = Database::new(db_path, SystemConfig::default())
         .map_err(|e| McpToolError::Internal(format!("open db '{}': {e}", db_path.display())))?;
-    let conn = Connection::new(&db)
-        .map_err(|e| McpToolError::Internal(format!("open conn: {e}")))?;
+    let conn =
+        Connection::new(&db).map_err(|e| McpToolError::Internal(format!("open conn: {e}")))?;
     f(&conn)
 }
 
@@ -309,9 +309,8 @@ impl McpTool for QueryTool {
                 // Distinguish "no embeddings exist" from "no matches above threshold".
                 // Cheap heuristic: count chunks with embeddings. If zero, the
                 // index was never embedded.
-                let count_res = conn.query(
-                    "MATCH (c:Chunk) WHERE c.embedding IS NOT NULL RETURN count(c) AS n",
-                );
+                let count_res = conn
+                    .query("MATCH (c:Chunk) WHERE c.embedding IS NOT NULL RETURN count(c) AS n");
                 let any_embedded = count_res
                     .ok()
                     .and_then(|mut r| r.next().and_then(|row| row.first().cloned()))
@@ -353,10 +352,9 @@ impl McpTool for ImpactTool {
     }
     async fn invoke(&self, args: Value) -> Result<Value, McpToolError> {
         let symbol = require_string(&args, "name")?.to_string();
-        let top = require_u64(&args, "top")
-            .map(|n| usize::try_from(n).unwrap_or(usize::MAX));
-        let max_depth = require_u64(&args, "max_depth")
-            .map(|n| usize::try_from(n).unwrap_or(usize::MAX));
+        let top = require_u64(&args, "top").map(|n| usize::try_from(n).unwrap_or(usize::MAX));
+        let max_depth =
+            require_u64(&args, "max_depth").map(|n| usize::try_from(n).unwrap_or(usize::MAX));
 
         let db_path = resolve_db_path(args.get("repo"))?;
         with_conn(&db_path, |conn| {

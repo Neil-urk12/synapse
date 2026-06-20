@@ -33,10 +33,9 @@ pub enum CandidateError {
 pub fn map_domain_error(err: anyhow::Error) -> ErrorData {
     if let Some(candidate) = err.downcast_ref::<CandidateError>() {
         return match candidate {
-            CandidateError::NoMatch(name) => ErrorData::invalid_params(
-                format!("no symbol matches '{name}'"),
-                None,
-            ),
+            CandidateError::NoMatch(name) => {
+                ErrorData::invalid_params(format!("no symbol matches '{name}'"), None)
+            }
             CandidateError::Ambiguous(name, candidates) => ErrorData::invalid_params(
                 format!("'{name}' matches multiple candidates"),
                 Some(json!({ "candidates": candidates })),
@@ -66,10 +65,9 @@ pub fn map_domain_error(err: anyhow::Error) -> ErrorData {
 
     if let Some(tool_err) = err.downcast_ref::<McpToolError>() {
         return match tool_err {
-            McpToolError::InvalidParams(msg) => ErrorData::invalid_params(
-                format!("invalid parameters: {msg}"),
-                None,
-            ),
+            McpToolError::InvalidParams(msg) => {
+                ErrorData::invalid_params(format!("invalid parameters: {msg}"), None)
+            }
             McpToolError::NotFound(msg) => {
                 ErrorData::invalid_params(format!("not found: {msg}"), None)
             }
@@ -84,10 +82,7 @@ pub fn map_domain_error(err: anyhow::Error) -> ErrorData {
     // The spec only mandates a recoverable-error message, not a typed path.
     let msg = err.to_string();
     if msg.contains("embedding") && msg.contains("not") {
-        return ErrorData::invalid_params(
-            "run 'synapse embed' to populate embeddings",
-            None,
-        );
+        return ErrorData::invalid_params("run 'synapse embed' to populate embeddings", None);
     }
 
     // Unmapped error → internal. Don't leak raw stack traces or panic messages.

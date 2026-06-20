@@ -20,8 +20,8 @@ where
 {
     let db = Database::new(db_path, SystemConfig::default())
         .map_err(|e| McpToolError::Internal(format!("open db '{}': {e}", db_path.display())))?;
-    let conn = Connection::new(&db)
-        .map_err(|e| McpToolError::Internal(format!("open conn: {e}")))?;
+    let conn =
+        Connection::new(&db).map_err(|e| McpToolError::Internal(format!("open conn: {e}")))?;
     f(&conn)
 }
 

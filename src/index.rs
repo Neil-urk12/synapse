@@ -724,7 +724,8 @@ mod tests {
             !registry_path.exists(),
             "registry should not be created when --no-register is passed"
         );
-        let loaded = RepoRegistry::load();
+        // Read from the tempdir; `load()` (no args) reads the real $HOME.
+        let loaded = RepoRegistry::load_from(&registry_path);
         assert!(loaded.is_ok());
         assert!(loaded.unwrap().entries.is_empty());
     }

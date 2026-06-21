@@ -12,6 +12,8 @@ Synapse is a high-performance code intelligence graph database and indexer built
 - **File Watcher**: Watches for file changes and automatically re-indexes with configurable debounce.
 - **Query CLI**: Subcommands for callers, callees, dependencies, context, blast-radius (`impact`), and raw Cypher queries.
 - **PageRank Scoring**: Ranks symbols by transitive importance over the CALLS graph; surfaces hubs and lets `impact` prioritize affected code.
+- **`synapse impact <symbol>`**: Blast-radius analysis. Find every symbol transitively affected by changing the given function/method, sorted by PageRank. The "what breaks if I change this?" primitive.
+- **`synapse rank [--top N] [--kind ...]`**: Top symbols by PageRank. Surface the structural hubs of your codebase over the CALLS graph.
 - **Interactive REPL**: Shell with history, shortcuts, and raw Cypher query support.
 
 ## Quick Start

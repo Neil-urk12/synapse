@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use lbug::{Connection, Database, SystemConfig};
 use serde_json::{json, Value};
 
+use crate::mcp::repo_registry::{RegistryError, RepoRegistry};
 use crate::mcp::tools::{McpTool, McpToolError};
 
 // ─── Shared helpers ─────────────────────────────────────────────────────
@@ -33,17 +34,53 @@ where
     f(&conn)
 }
 
-/// Resolve a DB path from the tool's `repo` argument, or default to
-/// `./synapse.lbug` (cwd).
+/// Resolve a DB path from the tool's `repo` argument.
 ///
-/// v1 stub: a future change wires this through the repo_registry so MCP
-/// clients can target any indexed repo by name.
+/// If `repo` is a non-empty string, look it up in `~/.synapse/repos.json`
+/// and return the entry's `db_path`. An empty string is treated the same
+/// as a missing `repo` argument. If the argument is missing/empty, fall
+/// back to `./synapse.lbug` in the current working directory if it exists.
 fn resolve_db_path(repo: Option<&Value>) -> Result<PathBuf, McpToolError> {
-    match repo.and_then(|v| v.as_str()) {
-        Some(_name) => Err(McpToolError::NotFound(
-            "repo name resolution not yet implemented; use cwd with default db path".into(),
-        )),
-        None => Ok(PathBuf::from("synapse.lbug")),
+    let name = match repo.and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s,
+        _ => return resolve_cwd_db(),
+    };
+
+    let registry = RepoRegistry::load().map_err(|e| match e {
+        RegistryError::NoHome => {
+            McpToolError::Internal("HOME is unset; cannot read ~/.synapse/repos.json".into())
+        }
+        other => McpToolError::Internal(format!("registry load failed: {other}")),
+    })?;
+
+    let entry = registry.find_by_name(name).ok_or_else(|| {
+        McpToolError::NotFound(format!(
+            "repo '{name}' not found in registry; see synapse://repos for available repos"
+        ))
+    })?;
+
+    if !entry.db_path.exists() {
+        return Err(McpToolError::InvalidParams(format!(
+            "db file '{}' not found for repo '{name}' (run `synapse index` to re-create)",
+            entry.db_path.display()
+        )));
+    }
+
+    Ok(entry.db_path.clone())
+}
+
+fn resolve_cwd_db() -> Result<PathBuf, McpToolError> {
+    let cwd_db = std::env::current_dir()
+        .map_err(|e| McpToolError::Internal(format!("cwd unavailable: {e}")))?
+        .join("synapse.lbug");
+    if cwd_db.exists() {
+        Ok(cwd_db)
+    } else {
+        Err(McpToolError::InvalidParams(
+            "no repo specified and no synapse.lbug in cwd; \
+             see synapse://repos for available repos"
+                .to_string(),
+        ))
     }
 }
 
@@ -461,6 +498,62 @@ impl McpTool for RankTool {
 #[allow(clippy::expect_used)] // test fixtures assert on Option/Result values
 mod tests {
     use super::*;
+    use crate::mcp::repo_registry::RepoEntry;
+    use std::path::Path;
+    use std::sync::Mutex;
+
+    /// Serializes tests that mutate the `HOME` env var.
+    static HOME_LOCK: Mutex<()> = Mutex::new(());
+
+    /// RAII guard that restores `HOME` on drop. Prevents test pollution if
+    /// the test panics before manual restoration.
+    struct HomeGuard {
+        prev: Option<std::ffi::OsString>,
+    }
+
+    impl HomeGuard {
+        fn set(value: &Path) -> Self {
+            let prev = std::env::var_os("HOME");
+            std::env::set_var("HOME", value);
+            Self { prev }
+        }
+
+        /// Capture current HOME and `remove_var` it. On drop, restore HOME to
+        /// its captured value (or leave unset if it was unset).
+        fn unset() -> Self {
+            let prev = std::env::var_os("HOME");
+            std::env::remove_var("HOME");
+            Self { prev }
+        }
+    }
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            match self.prev.take() {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+
+    /// RAII guard that restores the current working directory on drop.
+    struct CwdGuard {
+        prev: std::path::PathBuf,
+    }
+
+    impl CwdGuard {
+        fn set(path: &Path) -> std::io::Result<Self> {
+            let prev = std::env::current_dir()?;
+            std::env::set_current_dir(path)?;
+            Ok(Self { prev })
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.prev);
+        }
+    }
 
     #[test]
     fn cypher_tool_metadata() {
@@ -565,16 +658,261 @@ mod tests {
     }
 
     #[test]
-    fn resolve_db_path_rejects_named_repo_for_v1() {
-        let args = json!({"repo": "synapse"});
-        let result = resolve_db_path(args.get("repo"));
-        assert!(matches!(result, Err(McpToolError::NotFound(_))));
+    fn resolve_db_path_uses_registry_entry() {
+        let _lock = HOME_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("synapse.lbug");
+        std::fs::File::create(&db_path).unwrap();
+
+        let mut registry = RepoRegistry::default();
+        registry
+            .add_or_update(
+                RepoEntry {
+                    name: "test".to_string(),
+                    path: tmp.path().to_path_buf(),
+                    db_path: db_path.clone(),
+                    indexed_at: "2026-06-21T00:00:00Z".to_string(),
+                    indexed_commit: String::new(),
+                },
+                false,
+            )
+            .unwrap();
+        registry
+            .save_to(&tmp.path().join(".synapse/repos.json"))
+            .unwrap();
+
+        let _home = HomeGuard::set(tmp.path());
+        let result = resolve_db_path(Some(&json!("test"))).unwrap();
+
+        assert_eq!(result, db_path);
+    }
+
+    /// Assert that a result is `Err(InvalidParams)` with `needle` in the message.
+    fn assert_invalid_params_contains(result: Result<PathBuf, McpToolError>, needle: &str) {
+        assert!(
+            matches!(result, Err(McpToolError::InvalidParams(_))),
+            "expected Err(InvalidParams), got {result:?}"
+        );
+        if let Err(McpToolError::InvalidParams(msg)) = result {
+            assert!(
+                msg.contains(needle),
+                "InvalidParams message should contain '{needle}', got: {msg}"
+            );
+        }
+    }
+
+    /// Assert that a result is `Err(NotFound)` with `needle` in the message.
+    fn assert_not_found_contains(result: Result<PathBuf, McpToolError>, needle: &str) {
+        assert!(
+            matches!(result, Err(McpToolError::NotFound(_))),
+            "expected Err(NotFound), got {result:?}"
+        );
+        if let Err(McpToolError::NotFound(msg)) = result {
+            assert!(
+                msg.contains(needle),
+                "NotFound message should contain '{needle}', got: {msg}"
+            );
+        }
     }
 
     #[test]
-    fn resolve_db_path_defaults_to_synapse_lbug() {
-        let args = json!({});
-        let result = resolve_db_path(args.get("repo")).unwrap();
-        assert_eq!(result, PathBuf::from("synapse.lbug"));
+    fn resolve_db_path_rejects_unknown_name() {
+        let _lock = HOME_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = HomeGuard::set(tmp.path());
+
+        assert_not_found_contains(
+            resolve_db_path(Some(&json!("missing"))),
+            "not found in registry",
+        );
+    }
+
+    #[test]
+    fn resolve_db_path_rejects_missing_db_file() {
+        let _lock = HOME_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+
+        let missing = tmp.path().join("nonexistent.lbug");
+        let mut registry = RepoRegistry::default();
+        registry
+            .add_or_update(
+                RepoEntry {
+                    name: "test".to_string(),
+                    path: tmp.path().to_path_buf(),
+                    db_path: missing,
+                    indexed_at: "2026-06-21T00:00:00Z".to_string(),
+                    indexed_commit: String::new(),
+                },
+                false,
+            )
+            .unwrap();
+        registry
+            .save_to(&tmp.path().join(".synapse/repos.json"))
+            .unwrap();
+
+        let _home = HomeGuard::set(tmp.path());
+
+        assert_invalid_params_contains(resolve_db_path(Some(&json!("test"))), "not found for repo");
+    }
+
+    #[test]
+    fn resolve_db_path_empty_string_treated_as_none() {
+        let _lock = HOME_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::File::create(tmp.path().join("synapse.lbug")).unwrap();
+
+        let _home = HomeGuard::set(tmp.path());
+        let _cwd = CwdGuard::set(tmp.path()).unwrap();
+
+        let result = resolve_db_path(Some(&json!(""))).unwrap();
+        assert_eq!(result, tmp.path().join("synapse.lbug"));
+    }
+
+    #[test]
+    fn resolve_db_path_no_repo_no_cwd_db_errors() {
+        let _lock = HOME_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+
+        let _home = HomeGuard::set(tmp.path());
+        let _cwd = CwdGuard::set(tmp.path()).unwrap();
+
+        assert_invalid_params_contains(resolve_db_path(None), "see synapse://repos");
+    }
+
+    #[test]
+    fn resolve_db_path_registry_load_error_is_internal() {
+        let _lock = HOME_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".synapse")).unwrap();
+        std::fs::write(
+            tmp.path().join(".synapse/repos.json"),
+            "this is not valid JSON {{{",
+        )
+        .unwrap();
+
+        let _home = HomeGuard::set(tmp.path());
+
+        let result = resolve_db_path(Some(&json!("anything")));
+        assert!(
+            matches!(result, Err(McpToolError::Internal(_))),
+            "expected Err(Internal), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_db_path_no_cross_contamination_with_two_repos() {
+        let _lock = HOME_LOCK.lock().unwrap();
+        let tmp_home = tempfile::tempdir().unwrap();
+        let tmp_a = tempfile::tempdir().unwrap();
+        let tmp_b = tempfile::tempdir().unwrap();
+
+        let db_a = tmp_a.path().join("synapse.lbug");
+        let db_b = tmp_b.path().join("synapse.lbug");
+        std::fs::File::create(&db_a).unwrap();
+        std::fs::File::create(&db_b).unwrap();
+
+        let mut registry = RepoRegistry::default();
+        registry
+            .add_or_update(
+                RepoEntry {
+                    name: "alpha".to_string(),
+                    path: tmp_a.path().to_path_buf(),
+                    db_path: db_a.clone(),
+                    indexed_at: "2026-06-21T00:00:00Z".to_string(),
+                    indexed_commit: String::new(),
+                },
+                false,
+            )
+            .unwrap();
+        registry
+            .add_or_update(
+                RepoEntry {
+                    name: "beta".to_string(),
+                    path: tmp_b.path().to_path_buf(),
+                    db_path: db_b.clone(),
+                    indexed_at: "2026-06-21T00:00:00Z".to_string(),
+                    indexed_commit: String::new(),
+                },
+                false,
+            )
+            .unwrap();
+        registry
+            .save_to(&tmp_home.path().join(".synapse/repos.json"))
+            .unwrap();
+
+        let _home = HomeGuard::set(tmp_home.path());
+
+        let result_a = resolve_db_path(Some(&json!("alpha"))).unwrap();
+        let result_b = resolve_db_path(Some(&json!("beta"))).unwrap();
+
+        assert_eq!(result_a, db_a);
+        assert_eq!(result_b, db_b);
+        assert_ne!(db_a, db_b);
+    }
+
+    #[test]
+    fn concurrent_resolve_db_path_doesnt_deadlock() {
+        // HOME_LOCK serializes tests that mutate HOME (process-global env var).
+        // Without it, a parallel test could clobber HOME between this test setting
+        // it and the spawned threads reading it.
+        let _lock = HOME_LOCK.lock().unwrap();
+        let tmp_home = tempfile::tempdir().unwrap();
+        let tmp_repo = tempfile::tempdir().unwrap();
+        let db_path = tmp_repo.path().join("synapse.lbug");
+        std::fs::File::create(&db_path).unwrap();
+
+        let mut registry = RepoRegistry::default();
+        registry
+            .add_or_update(
+                RepoEntry {
+                    name: "test".to_string(),
+                    path: tmp_repo.path().to_path_buf(),
+                    db_path: db_path.clone(),
+                    indexed_at: "2026-06-21T00:00:00Z".to_string(),
+                    indexed_commit: String::new(),
+                },
+                false,
+            )
+            .unwrap();
+        registry
+            .save_to(&tmp_home.path().join(".synapse/repos.json"))
+            .unwrap();
+
+        let _home = HomeGuard::set(tmp_home.path());
+        let name = json!("test");
+
+        let results: Vec<PathBuf> = std::thread::scope(|s| {
+            (0..8)
+                .map(|_| s.spawn(|| resolve_db_path(Some(&name)).unwrap()))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .collect()
+        });
+
+        for result in &results {
+            assert_eq!(*result, db_path);
+        }
+    }
+
+    #[test]
+    fn resolve_db_path_home_unset_returns_internal() {
+        let _lock = HOME_LOCK.lock().unwrap();
+
+        let _home = HomeGuard::unset();
+
+        // HOME is unset. resolve_db_path with a non-empty `repo` arg forces
+        // RepoRegistry::load() → RegistryError::NoHome → McpToolError::Internal
+        // with the documented "HOME is unset" message.
+        let result = resolve_db_path(Some(&json!("anything")));
+
+        let matches_expected = matches!(
+            &result,
+            Err(McpToolError::Internal(msg)) if msg.contains("HOME is unset"),
+        );
+        assert!(
+            matches_expected,
+            "expected Internal mentioning HOME unset, got {result:?}"
+        );
     }
 }

@@ -1,3 +1,4 @@
+use crate::mcp::errors::CandidateError;
 use crate::query::candidates::{resolve_file_candidates, resolve_symbol_candidates};
 use crate::query::db::{
     fetch_callees, fetch_callers, fetch_contained_symbols, fetch_imported_by, fetch_imports,
@@ -5,6 +6,7 @@ use crate::query::db::{
 use crate::query::format::QueryFormat;
 use crate::types::query::{ContextPayload, FileInfo, SymbolInfo};
 use lbug::{Connection, Value};
+use serde_json::{json, Value as JsonValue};
 use std::error::Error;
 use std::io::Write;
 
@@ -16,8 +18,9 @@ pub enum Direction {
 
 /// Resolve a symbol query (callers, callees, context) against the database.
 /// Fetches all symbols, filters by fuzzy/exact match, returns the first hit.
-/// When `warn_multiple` is true, prints a warning to stderr if more than one
-/// symbol matches (preserves `run_context`'s pre-unification behavior).
+/// When `warn_multiple` is true and more than one symbol matches, returns
+/// `CandidateError::Ambiguous` carrying the full candidate list so the MCP
+/// tool layer can surface `data.candidates` to the agent.
 fn resolve_one_symbol(
     conn: &Connection,
     target: &str,
@@ -30,16 +33,27 @@ fn resolve_one_symbol(
         return Err(format!("Symbol '{}' not found", target).into());
     }
     if warn_multiple && candidates.len() > 1 {
-        eprintln!("Warning: Multiple matches found for symbol '{}':", target);
-        for c in &candidates {
-            eprintln!("  - {}", c.id);
-        }
-        eprintln!("Showing details for the first match: {}", candidates[0].id);
+        let payload: Vec<JsonValue> = candidates
+            .iter()
+            .map(|c| {
+                let file = c.id.split("::").next().unwrap_or(&c.id).to_string();
+                json!({
+                    "name": c.name,
+                    "file": file,
+                    "line": c.start_line,
+                })
+            })
+            .collect();
+        return Err(CandidateError::Ambiguous(target.to_string(), payload).into());
     }
     Ok(candidates.into_iter().next().unwrap())
 }
 
 /// Resolve a file query (dependencies, file context) against the database.
+/// When `warn_multiple` is true and more than one file matches, returns
+/// `CandidateError::Ambiguous` so the MCP tool layer can surface
+/// `data.candidates` to the agent. Files don't carry line numbers in the
+/// graph schema, so `line` is reported as 0 for each file candidate.
 fn resolve_one_file(
     conn: &Connection,
     target: &str,
@@ -52,14 +66,17 @@ fn resolve_one_file(
         return Err(format!("File '{}' not found", target).into());
     }
     if warn_multiple && candidates.len() > 1 {
-        eprintln!("Warning: Multiple matches found for file '{}':", target);
-        for c in &candidates {
-            eprintln!("  - {}", c.path);
-        }
-        eprintln!(
-            "Showing details for the first match: {}",
-            candidates[0].path
-        );
+        let payload: Vec<JsonValue> = candidates
+            .iter()
+            .map(|c| {
+                json!({
+                    "name": c.path,
+                    "file": c.path,
+                    "line": 0,
+                })
+            })
+            .collect();
+        return Err(CandidateError::Ambiguous(target.to_string(), payload).into());
     }
     Ok(candidates.into_iter().next().unwrap())
 }
@@ -126,7 +143,7 @@ pub fn run_call_graph(
     format: QueryFormat,
     writer: &mut dyn Write,
 ) -> Result<(), Box<dyn Error>> {
-    let target = resolve_one_symbol(conn, symbol, exact, false)?;
+    let target = resolve_one_symbol(conn, symbol, exact, true)?;
     let edges: Vec<crate::types::query::CallerInfo> = match direction {
         Direction::Callers => fetch_callers(conn, &target.id)?,
         Direction::Callees => fetch_callees(conn, &target.id)?
@@ -149,7 +166,7 @@ pub fn run_dependencies(
     format: QueryFormat,
     writer: &mut dyn Write,
 ) -> Result<(), Box<dyn Error>> {
-    let target = resolve_one_file(conn, file, exact, false)?;
+    let target = resolve_one_file(conn, file, exact, true)?;
     let imports = fetch_imports(conn, &target.path)?;
     let imported_by = fetch_imported_by(conn, &target.path)?;
     format.render_dependencies(&target, &imports, &imported_by, writer)

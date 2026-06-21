@@ -66,6 +66,28 @@ pub fn map_domain_error(err: anyhow::Error) -> ErrorData {
     if let Some(tool_err) = err.downcast_ref::<McpToolError>() {
         return match tool_err {
             McpToolError::InvalidParams(msg) => {
+                // Detect the round-tripped `CandidateError::Ambiguous` payload
+                // produced by `classify_query_error` and re-surface it as an
+                // `invalid_params` with `data.candidates` so the agent can
+                // disambiguate. The marker is a JSON object with a sentinel
+                // key; anything else falls through to the plain message.
+                if let Ok(marker) = serde_json::from_str::<Value>(msg) {
+                    if marker.get("__synapse_ambiguous__").and_then(Value::as_bool) == Some(true) {
+                        let name = marker
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        let candidates = marker
+                            .get("candidates")
+                            .cloned()
+                            .unwrap_or(Value::Array(Vec::new()));
+                        return ErrorData::invalid_params(
+                            format!("'{name}' matches multiple candidates"),
+                            Some(json!({ "candidates": candidates })),
+                        );
+                    }
+                }
                 ErrorData::invalid_params(format!("invalid parameters: {msg}"), None)
             }
             McpToolError::NotFound(msg) => {
@@ -139,5 +161,33 @@ mod tests {
         let mapped = map_domain_error(err);
         assert_eq!(mapped.code, ErrorCode::INTERNAL_ERROR);
         assert_eq!(mapped.message, "internal error: database corruption");
+    }
+
+    /// The MCP tool layer encodes a `CandidateError::Ambiguous` payload into
+    /// `McpToolError::InvalidParams` as a JSON marker (see `classify_query_error`
+    /// in `src/mcp/tool_impls.rs`). `map_domain_error` must recognise that
+    /// marker and re-surface the message + `data.candidates` so the agent can
+    /// disambiguate. This test guards the round-trip contract.
+    #[test]
+    fn tool_invalid_params_ambiguous_marker_re_emits_candidates() {
+        let candidates = vec![
+            json!({"name": "parse", "file": "src/parser.rs", "line": 10}),
+            json!({"name": "parse", "file": "src/ast.rs", "line": 42}),
+        ];
+        let marker = json!({
+            "__synapse_ambiguous__": true,
+            "name": "parse",
+            "candidates": candidates,
+        })
+        .to_string();
+        let err = anyhow::Error::new(McpToolError::InvalidParams(marker));
+        let mapped = map_domain_error(err);
+        assert_eq!(mapped.code, ErrorCode::INVALID_PARAMS);
+        assert_eq!(mapped.message, "'parse' matches multiple candidates");
+        let data = mapped
+            .data
+            .expect("data should be set for ambiguous marker");
+        let extracted = data.get("candidates").expect("candidates key in data");
+        assert_eq!(extracted, &json!(candidates));
     }
 }

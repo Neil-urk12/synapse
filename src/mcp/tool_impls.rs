@@ -94,10 +94,35 @@ fn require_u64(args: &Value, key: &str) -> Option<u64> {
     args.get(key).and_then(|v| v.as_u64())
 }
 
+/// Sentinel key used to round-trip a `CandidateError::Ambiguous` payload
+/// through `McpToolError::InvalidParams(String)`. `errors::map_domain_error`
+/// inspects the message and, if it sees this marker, re-routes to
+/// `ErrorData::invalid_params` with `data.candidates` populated. Adding a
+/// new variant to `McpToolError` would be cleaner, but the type is frozen
+/// for v1 and adding a wire-level discriminator is the smallest change
+/// that satisfies the spec's `data.candidates` requirement.
+const AMBIGUOUS_MARKER: &str = "__synapse_ambiguous__";
+
 /// Classify `Box<dyn Error>` from existing query handlers into McpToolError.
-/// String-based for v1; a future change can introduce typed downcasting once
-/// the handlers return `Result<_, CandidateError>` directly.
+/// First tries a typed downcast to `CandidateError` (so the Ambiguous case
+/// preserves the candidate list for the wire adapter). Falls back to a
+/// string-based heuristic for the legacy string-typed errors.
 fn classify_query_error(e: Box<dyn std::error::Error>) -> McpToolError {
+    if let Some(candidate) = e.downcast_ref::<crate::mcp::errors::CandidateError>() {
+        return match candidate {
+            crate::mcp::errors::CandidateError::NoMatch(name) => {
+                McpToolError::NotFound(format!("no symbol matches '{name}'"))
+            }
+            crate::mcp::errors::CandidateError::Ambiguous(name, candidates) => {
+                let marker = serde_json::json!({
+                    AMBIGUOUS_MARKER: true,
+                    "name": name,
+                    "candidates": candidates,
+                });
+                McpToolError::InvalidParams(marker.to_string())
+            }
+        };
+    }
     let msg = e.to_string();
     if msg.contains("matches multiple") || msg.contains("Ambiguous") {
         McpToolError::InvalidParams(msg)
@@ -116,6 +141,88 @@ fn capture_and_parse_json(buf: &[u8]) -> Result<Value, McpToolError> {
         .trim();
     serde_json::from_str(s)
         .map_err(|e| McpToolError::Internal(format!("parse output: {e}; raw={s}")))
+}
+
+/// Reshape the `{ target, callers/callees }` wrapper produced by
+/// `run_call_graph` into the spec's flat array of `{ symbol, file, line,
+/// depth }` rows. The symbol id encodes the file path as its first `::`
+/// segment. `depth` is reported as `1` for every row because the current
+/// `fetch_callers` / `fetch_callees` queries only return direct edges;
+/// transitive traversal (BFS) is a v2 concern that the spec anticipates
+/// but the handler doesn't implement yet. `include_depth = false` drops
+/// the field (used by `synapse_callees`, which has no `depth` in the spec).
+fn reshape_call_graph(value: &Value, include_depth: bool) -> Result<Value, McpToolError> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| McpToolError::Internal("call_graph output not an object".into()))?;
+    // The handler names the array key after the direction ("callers" or
+    // "callees") via `json_key`. We don't care which — we just need the
+    // single non-`target` array key.
+    let edges = obj
+        .values()
+        .find_map(|v| v.as_array())
+        .ok_or_else(|| McpToolError::Internal("call_graph output missing edges array".into()))?;
+    let reshaped: Vec<Value> = edges
+        .iter()
+        .map(|e| {
+            let id = e.get("id").and_then(Value::as_str).unwrap_or("");
+            let file = id.split("::").next().unwrap_or(id).to_string();
+            let line = e.get("call_site_line").cloned().unwrap_or(Value::Null);
+            let mut row = json!({
+                "symbol": id,
+                "file": file,
+                "line": line,
+            });
+            if include_depth {
+                row["depth"] = json!(1);
+            }
+            row
+        })
+        .collect();
+    Ok(Value::Array(reshaped))
+}
+
+/// Drop the `target` wrapper from a dependencies payload and return
+/// `{ imports: [...], imported_by: [...] }`.
+fn reshape_dependencies(value: &Value) -> Result<Value, McpToolError> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| McpToolError::Internal("dependencies output not an object".into()))?;
+    Ok(json!({
+        "imports": obj.get("imports").cloned().unwrap_or(Value::Array(Vec::new())),
+        "imported_by": obj.get("imported_by").cloned().unwrap_or(Value::Array(Vec::new())),
+    }))
+}
+
+/// Reshape a context payload into the spec's
+/// `{ symbol: {id, name, kind, file, line} | null, callers, callees }` shape.
+/// The handler's `ContextPayload` carries extra fields (`source_code`,
+/// `imports`, `imported_by`, `contained_symbols`, `end_line`, `signature`)
+/// that the spec doesn't list; we drop them. `file` is derived from the
+/// symbol id (first `::` segment) and `line` is the symbol's `start_line`.
+fn reshape_context(value: &Value) -> Result<Value, McpToolError> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| McpToolError::Internal("context output not an object".into()))?;
+    let symbol = match obj.get("symbol") {
+        Some(s) if !s.is_null() => {
+            let id = s.get("id").and_then(Value::as_str).unwrap_or("");
+            let file = id.split("::").next().unwrap_or(id).to_string();
+            Some(json!({
+                "id": s.get("id").cloned().unwrap_or(Value::Null),
+                "name": s.get("name").cloned().unwrap_or(Value::Null),
+                "kind": s.get("kind").cloned().unwrap_or(Value::Null),
+                "file": file,
+                "line": s.get("start_line").cloned().unwrap_or(Value::Null),
+            }))
+        }
+        _ => None,
+    };
+    Ok(json!({
+        "symbol": symbol,
+        "callers": obj.get("callers").cloned().unwrap_or(Value::Array(Vec::new())),
+        "callees": obj.get("callees").cloned().unwrap_or(Value::Array(Vec::new())),
+    }))
 }
 
 /// Serialize a `lbug::QueryResult` to a JSON array of row objects, where each
@@ -191,7 +298,8 @@ impl McpTool for CallersTool {
                 &mut buf,
             )
             .map_err(classify_query_error)?;
-            capture_and_parse_json(&buf)
+            let raw = capture_and_parse_json(&buf)?;
+            reshape_call_graph(&raw, true)
         })
     }
 }
@@ -223,7 +331,8 @@ impl McpTool for CalleesTool {
                 &mut buf,
             )
             .map_err(classify_query_error)?;
-            capture_and_parse_json(&buf)
+            let raw = capture_and_parse_json(&buf)?;
+            reshape_call_graph(&raw, false)
         })
     }
 }
@@ -252,7 +361,8 @@ impl McpTool for DepsTool {
                 &mut buf,
             )
             .map_err(classify_query_error)?;
-            capture_and_parse_json(&buf)
+            let raw = capture_and_parse_json(&buf)?;
+            reshape_dependencies(&raw)
         })
     }
 }
@@ -294,7 +404,8 @@ impl McpTool for ContextTool {
                 &mut buf,
             )
             .map_err(classify_query_error)?;
-            capture_and_parse_json(&buf)
+            let raw = capture_and_parse_json(&buf)?;
+            reshape_context(&raw)
         })
     }
 }
@@ -332,6 +443,9 @@ impl McpTool for QueryTool {
         let vec_str: Vec<String> = query_vec.iter().map(|f| f.to_string()).collect();
 
         with_conn(&db_path, |conn| {
+            // 1. Vector search. The schema only stores embeddings on
+            //    `Chunk`; we project id/text/language/distance here and
+            //    enrich with file/line via a follow-up query below.
             let search_query = format!(
                 "CALL QUERY_VECTOR_INDEX('Chunk', 'idx_chunk_vector', [{}], {}) \
                  YIELD node, distance RETURN node.id, node.text, node.language, distance",
@@ -360,14 +474,61 @@ impl McpTool for QueryTool {
                 }
                 return Ok(Value::Array(vec![]));
             }
+            // 2. Follow-up: pull `file_path` and `start_line` for each
+            //    surviving chunk. `Chunk` has neither property; both come
+            //    from the `DOCUMENTED_BY` edge to a File (path) or a Symbol
+            //    (start_line). Each chunk is documented by exactly one
+            //    owner, so a single row per chunk is expected.
+            let chunk_ids: Vec<lbug::Value> = scored
+                .iter()
+                .map(|s| lbug::Value::String(s.id.clone()))
+                .collect();
+            let id_list = lbug::Value::List(lbug::LogicalType::String, chunk_ids);
+            let lookup_query = "MATCH (c:Chunk) WHERE c.id IN $ids \
+                                OPTIONAL MATCH (file:File)-[:DOCUMENTED_BY]->(c) \
+                                OPTIONAL MATCH (sym:Symbol)-[:DOCUMENTED_BY]->(c) \
+                                RETURN c.id, file.path, sym.start_line";
+            let mut lookup_stmt = conn
+                .prepare(lookup_query)
+                .map_err(|e| McpToolError::Internal(format!("prepare lookup: {e}")))?;
+            let lookup_result = conn
+                .execute(&mut lookup_stmt, vec![("ids", id_list)])
+                .map_err(|e| McpToolError::Internal(format!("lookup query: {e}")))?;
+            use std::collections::HashMap;
+            let mut location_by_chunk: HashMap<String, (String, i64)> = HashMap::new();
+            for row in lookup_result {
+                let id = match row.first() {
+                    Some(lbug::Value::String(s)) => s.clone(),
+                    _ => continue,
+                };
+                let file_path = match row.get(1) {
+                    Some(lbug::Value::String(p)) => p.clone(),
+                    _ => String::new(),
+                };
+                let start_line = match row.get(2) {
+                    Some(lbug::Value::Int64(n)) => *n,
+                    _ => 0,
+                };
+                location_by_chunk.insert(id, (file_path, start_line));
+            }
+            // 3. Reshape to the spec's
+            //    `{ chunk_id, file_path, start_line, text, score }`.
+            //    `language` is dropped (not in the spec). `source_code`
+            //    is renamed to `text`. Missing locations surface as empty
+            //    string / 0 so the agent can detect the gap.
             let arr: Vec<Value> = scored
                 .iter()
                 .map(|s| {
+                    let (file_path, start_line) = location_by_chunk
+                        .get(&s.id)
+                        .cloned()
+                        .unwrap_or((String::new(), 0));
                     json!({
                         "chunk_id": s.id,
+                        "file_path": file_path,
+                        "start_line": start_line,
+                        "text": s.text,
                         "score": s.score,
-                        "language": s.language,
-                        "source_code": s.text,
                     })
                 })
                 .collect();
@@ -403,14 +564,18 @@ impl McpTool for ImpactTool {
                     ImpactError::Io(_) => McpToolError::Internal(e.to_string()),
                 }
             })?;
+            // Spec shape: `{ symbol, kind, file, line, depth, pagerank }`.
+            // `ImpactRow` carries `start_line` rather than `line`, so we
+            // project it under the spec field name. `rank` is dropped — the
+            // array order itself is the rank.
             let arr: Vec<Value> = rows
                 .iter()
                 .map(|r| {
                     json!({
-                        "rank": r.rank,
                         "symbol": r.id,
                         "kind": r.kind,
                         "file": r.file,
+                        "line": r.start_line,
                         "depth": r.depth,
                         "pagerank": r.pagerank,
                     })
@@ -495,7 +660,7 @@ impl McpTool for RankTool {
 // ─── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::expect_used)] // test fixtures assert on Option/Result values
+#[allow(clippy::expect_used, clippy::panic)] // test fixtures assert on Option/Result values; panics are the assertion mechanism in #[test] bodies
 mod tests {
     use super::*;
     use crate::mcp::repo_registry::RepoEntry;
@@ -655,6 +820,187 @@ mod tests {
         let err: Box<dyn std::error::Error> = "unexpected db error".to_string().into();
         let mapped = classify_query_error(err);
         assert!(matches!(mapped, McpToolError::Internal(_)));
+    }
+
+    // ─── Typed downcast of `CandidateError` ─────────────────────────────
+
+    /// A typed `CandidateError::Ambiguous` arriving from the query handler
+    /// must be encoded as a JSON-marker `McpToolError::InvalidParams` so
+    /// `errors::map_domain_error` can re-surface `data.candidates`. The
+    /// plain-string fallback in `classify_query_error` would lose the
+    /// candidate list, so this test guards the typed path explicitly.
+    #[test]
+    fn classify_query_error_typed_ambiguous_emits_marker() {
+        use crate::mcp::errors::CandidateError;
+        let candidates = vec![
+            json!({"name": "parse", "file": "src/parser.rs", "line": 10}),
+            json!({"name": "parse", "file": "src/ast.rs", "line": 42}),
+        ];
+        let err: Box<dyn std::error::Error> = Box::new(CandidateError::Ambiguous(
+            "parse".to_string(),
+            candidates.clone(),
+        ));
+        let mapped = classify_query_error(err);
+        let McpToolError::InvalidParams(msg) = mapped else {
+            panic!("expected InvalidParams marker, got {mapped:?}");
+        };
+        let marker: Value = serde_json::from_str(&msg)
+            .unwrap_or_else(|e| panic!("marker not valid JSON: {e}; raw={msg}"));
+        assert_eq!(marker["__synapse_ambiguous__"], json!(true));
+        assert_eq!(marker["name"], json!("parse"));
+        assert_eq!(marker["candidates"], json!(candidates));
+    }
+
+    #[test]
+    fn classify_query_error_typed_no_match_maps_to_not_found() {
+        use crate::mcp::errors::CandidateError;
+        let err: Box<dyn std::error::Error> = Box::new(CandidateError::NoMatch("foo".to_string()));
+        let mapped = classify_query_error(err);
+        let McpToolError::NotFound(msg) = mapped else {
+            panic!("expected NotFound, got {mapped:?}");
+        };
+        assert!(
+            msg.contains("'foo'"),
+            "NotFound message should name the symbol, got: {msg}"
+        );
+    }
+
+    // ─── Reshape helpers ────────────────────────────────────────────────
+
+    /// Verifies `synapse_callers` / `synapse_callees` output matches the
+    /// spec's `{ symbol, file, line, [depth] }` flat array.
+    #[test]
+    fn reshape_call_graph_with_depth() {
+        let raw = json!({
+            "target": {
+                "id": "src/main.rs::main",
+                "name": "main",
+                "kind": "Function",
+                "start_line": 1,
+                "end_line": 10,
+                "signature": "fn main()"
+            },
+            "callers": [
+                {
+                    "id": "src/lib.rs::invoke_main",
+                    "name": "invoke_main",
+                    "kind": "Function",
+                    "signature": "fn invoke_main()",
+                    "call_site_line": 42
+                },
+                {
+                    "id": "nested/mod.rs::deep::helper",
+                    "name": "helper",
+                    "kind": "Function",
+                    "signature": "fn helper()",
+                    "call_site_line": 7
+                }
+            ]
+        });
+        let reshaped = reshape_call_graph(&raw, true).unwrap();
+        let arr = reshaped.as_array().expect("array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(
+            arr[0],
+            json!({
+                "symbol": "src/lib.rs::invoke_main",
+                "file": "src/lib.rs",
+                "line": 42,
+                "depth": 1
+            })
+        );
+        // `file` is the first `::` segment of the symbol id.
+        assert_eq!(arr[1]["file"], json!("nested/mod.rs"));
+        assert!(arr[1].get("depth").is_some());
+    }
+
+    /// `synapse_callees` spec shape omits `depth`.
+    #[test]
+    fn reshape_call_graph_without_depth() {
+        let raw = json!({
+            "target": {"id": "x::f", "name": "f", "kind": "Function"},
+            "callees": [
+                {"id": "x::g", "name": "g", "kind": "Function", "call_site_line": 3}
+            ]
+        });
+        let reshaped = reshape_call_graph(&raw, false).unwrap();
+        let arr = reshaped.as_array().unwrap();
+        assert_eq!(arr[0]["symbol"], json!("x::g"));
+        assert_eq!(arr[0]["file"], json!("x"));
+        assert_eq!(arr[0]["line"], json!(3));
+        assert!(
+            arr[0].get("depth").is_none(),
+            "callees should not include depth"
+        );
+    }
+
+    /// `synapse_deps` should drop the `target` wrapper.
+    #[test]
+    fn reshape_dependencies_drops_target() {
+        let raw = json!({
+            "target": {"path": "src/main.rs", "language": "Rust"},
+            "imports": ["src/parser.rs", "src/util.rs"],
+            "imported_by": ["src/lib.rs"]
+        });
+        let reshaped = reshape_dependencies(&raw).unwrap();
+        assert_eq!(
+            reshaped,
+            json!({
+                "imports": ["src/parser.rs", "src/util.rs"],
+                "imported_by": ["src/lib.rs"]
+            })
+        );
+        assert!(reshaped.get("target").is_none());
+    }
+
+    /// `synapse_context` symbol projection drops `signature`/`end_line`
+    /// and renames `start_line` → `line` per spec.
+    #[test]
+    fn reshape_context_drops_signature_and_renames_line() {
+        let raw = json!({
+            "symbol": {
+                "id": "src/main.rs::main",
+                "name": "main",
+                "kind": "Function",
+                "start_line": 10,
+                "end_line": 20,
+                "signature": "fn main()"
+            },
+            "file": null,
+            "source_code": "fn main() {}",
+            "callers": [{"id": "x::c", "call_site_line": 1}],
+            "callees": [],
+            "imports": [],
+            "imported_by": [],
+            "contained_symbols": []
+        });
+        let reshaped = reshape_context(&raw).unwrap();
+        assert_eq!(
+            reshaped["symbol"],
+            json!({
+                "id": "src/main.rs::main",
+                "name": "main",
+                "kind": "Function",
+                "file": "src/main.rs",
+                "line": 10
+            })
+        );
+        assert!(reshaped.get("source_code").is_none());
+        assert_eq!(reshaped["callers"][0]["id"], json!("x::c"));
+    }
+
+    /// `synapse_context` when called with `file` (no symbol) returns
+    /// `symbol: null` rather than dropping the field.
+    #[test]
+    fn reshape_context_handles_null_symbol() {
+        let raw = json!({
+            "symbol": null,
+            "file": {"path": "src/lib.rs", "language": "Rust"},
+            "callers": [],
+            "callees": []
+        });
+        let reshaped = reshape_context(&raw).unwrap();
+        assert!(reshaped["symbol"].is_null());
     }
 
     #[test]

@@ -23,7 +23,8 @@ use serde_json::Value;
 use crate::mcp::errors::map_domain_error;
 use crate::mcp::resources::{read_repo_status, read_repos};
 use crate::mcp::tool_impls::{
-    CalleesTool, CallersTool, ContextTool, CypherTool, DepsTool, ImpactTool, QueryTool, RankTool,
+    CalleesTool, CallersTool, ContextTool, CypherTool, DeadCodeTool, DepsTool, ImpactTool,
+    QueryTool, RankTool,
 };
 use crate::mcp::tools::{McpToolError, ToolRegistry};
 
@@ -58,6 +59,7 @@ impl McpServer {
         tools.register(Box::new(QueryTool));
         tools.register(Box::new(ImpactTool));
         tools.register(Box::new(RankTool));
+        tools.register(Box::new(DeadCodeTool));
         Self {
             tools: Arc::new(tools),
             tool_timeout,
@@ -295,7 +297,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn server_constructs_with_all_8_tools_registered() {
+    fn server_constructs_with_all_9_tools_registered() {
         let server = McpServer::new(Duration::from_secs(30));
         let names: Vec<_> = server
             .tools
@@ -308,6 +310,7 @@ mod tests {
             "synapse_callers",
             "synapse_context",
             "synapse_cypher",
+            "synapse_dead_code",
             "synapse_deps",
             "synapse_impact",
             "synapse_query",

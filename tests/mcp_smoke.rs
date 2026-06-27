@@ -56,7 +56,7 @@ fn send_request(
 }
 
 #[test]
-fn mcp_server_handshake_reports_8_synapse_tools() {
+fn mcp_server_handshake_reports_9_synapse_tools() {
     let mut child = Command::new(synapse_binary())
         .arg("mcp")
         .stdin(Stdio::piped())
@@ -133,6 +133,7 @@ fn mcp_server_handshake_reports_8_synapse_tools() {
         "synapse_callers",
         "synapse_context",
         "synapse_cypher",
+        "synapse_dead_code",
         "synapse_deps",
         "synapse_impact",
         "synapse_query",

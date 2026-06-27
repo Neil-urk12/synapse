@@ -180,7 +180,7 @@ pub fn sort_and_rank(rows: &mut Vec<ImpactRow>, opts: &ImpactOptions) {
 }
 
 /// Load every symbol's metadata + PageRank from the DB.
-fn load_symbol_rows(conn: &Connection) -> Result<HashMap<String, SymbolRow>, ImpactError> {
+pub fn load_symbol_rows(conn: &Connection) -> Result<HashMap<String, SymbolRow>, ImpactError> {
     let mut stmt =
         conn.prepare("MATCH (s:Symbol) RETURN s.id, s.name, s.kind, s.start_line, s.pagerank")?;
     let result = conn.execute(&mut stmt, vec![])?;
@@ -223,7 +223,9 @@ fn load_symbol_rows(conn: &Connection) -> Result<HashMap<String, SymbolRow>, Imp
 
 /// Load every CALLS edge from the DB and return the inverted adjacency map
 /// (`incoming[callee] = {callers...}`).
-fn load_incoming_calls(conn: &Connection) -> Result<HashMap<String, HashSet<String>>, ImpactError> {
+pub fn load_incoming_calls(
+    conn: &Connection,
+) -> Result<HashMap<String, HashSet<String>>, ImpactError> {
     let mut stmt = conn.prepare("MATCH (a:Symbol)-[:CALLS]->(b:Symbol) RETURN a.id, b.id")?;
     let result = conn.execute(&mut stmt, vec![])?;
     let mut incoming: HashMap<String, HashSet<String>> = HashMap::new();

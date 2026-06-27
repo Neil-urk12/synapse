@@ -357,6 +357,96 @@ impl QueryFormat {
         }
         Ok(())
     }
+
+    /// Render a dead code detection result.
+    pub fn render_dead_code(
+        &self,
+        rows: &[crate::dead_code::DeadCodeRow],
+        excluded_patterns: &[&str],
+        writer: &mut dyn Write,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        match self {
+            QueryFormat::Json => {
+                let json_val = serde_json::json!({
+                    "dead_code": rows,
+                    "count": rows.len(),
+                    "excluded_by_name": excluded_patterns,
+                });
+                writeln!(writer, "{}", serde_json::to_string_pretty(&json_val)?)?;
+            }
+            QueryFormat::Markdown => {
+                writeln!(writer, "# Dead Code ({} symbols)", rows.len())?;
+                if rows.is_empty() {
+                    writeln!(writer, "\nNo dead code found.")?;
+                } else {
+                    writeln!(writer)?;
+                    writeln!(
+                        writer,
+                        "| File | Line | Kind | Name | PageRank |"
+                    )?;
+                    writeln!(
+                        writer,
+                        "|------|------|------|------|----------|"
+                    )?;
+                    for r in rows {
+                        writeln!(
+                            writer,
+                            "| '{}' | {} | {} | '{}' | {} |",
+                            r.file,
+                            r.start_line,
+                            r.kind,
+                            r.name,
+                            match r.pagerank {
+                                Some(p) => format!("{:.4}", p),
+                                None => "—".to_string(),
+                            }
+                        )?;
+                    }
+                    writeln!(
+                        writer,
+                        "\nExcluded entry points: {}",
+                        excluded_patterns.join(", ")
+                    )?;
+                }
+            }
+            QueryFormat::Table => {
+                if rows.is_empty() {
+                    writeln!(writer, "No dead code found.")?;
+                } else {
+                    let headers = vec![
+                        "File".to_string(),
+                        "Line".to_string(),
+                        "Kind".to_string(),
+                        "Name".to_string(),
+                        "PageRank".to_string(),
+                    ];
+                    let table_rows: Vec<Vec<String>> = rows
+                        .iter()
+                        .map(|r| {
+                            vec![
+                                r.file.clone(),
+                                r.start_line.to_string(),
+                                r.kind.clone(),
+                                r.name.clone(),
+                                match r.pagerank {
+                                    Some(p) => format!("{:.4}", p),
+                                    None => "—".to_string(),
+                                },
+                            ]
+                        })
+                        .collect();
+                    writeln!(writer, "Dead Code ({} symbols)", rows.len())?;
+                    writeln!(writer, "{}", format_ascii_table(&headers, &table_rows))?;
+                    writeln!(
+                        writer,
+                        "\nExcluded entry points: {}",
+                        excluded_patterns.join(", ")
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 fn syntax_for_path(path: &str) -> &'static str {

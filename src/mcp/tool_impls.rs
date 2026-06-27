@@ -657,6 +657,66 @@ impl McpTool for RankTool {
     }
 }
 
+pub struct DeadCodeTool;
+
+#[async_trait::async_trait]
+impl McpTool for DeadCodeTool {
+    fn name(&self) -> &'static str {
+        "synapse_dead_code"
+    }
+    fn description(&self) -> &'static str {
+        "Find functions/methods with zero callers (dead code)."
+    }
+    async fn invoke(&self, args: Value) -> Result<Value, McpToolError> {
+        use crate::dead_code::{entry_point_patterns, find_dead_code, DeadCodeOptions};
+        use crate::impact::{load_incoming_calls, load_symbol_rows};
+
+        let top = require_u64(&args, "top")
+            .map(|n| usize::try_from(n).unwrap_or(100))
+            .unwrap_or(100);
+        let kind = args
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let db_path = resolve_db_path(args.get("repo"))?;
+        with_conn(&db_path, |conn| {
+            let symbols = load_symbol_rows(conn)
+                .map_err(|e| McpToolError::Internal(format!("load symbols: {e}")))?;
+            let incoming = load_incoming_calls(conn)
+                .map_err(|e| McpToolError::Internal(format!("load calls: {e}")))?;
+
+            let opts = DeadCodeOptions {
+                top: Some(top),
+                kind,
+            };
+
+            let dead = find_dead_code(&symbols, &incoming, &opts);
+            let patterns = entry_point_patterns();
+
+            let arr: Vec<Value> = dead
+                .into_iter()
+                .map(|r| {
+                    json!({
+                        "id": r.id,
+                        "name": r.name,
+                        "kind": r.kind,
+                        "file": r.file,
+                        "line": r.start_line,
+                        "pagerank": r.pagerank,
+                    })
+                })
+                .collect();
+
+            Ok(json!({
+                "dead_code": arr,
+                "count": arr.len(),
+                "excluded_by_name": patterns,
+            }))
+        })
+    }
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -774,6 +834,13 @@ mod tests {
         let t = RankTool;
         assert_eq!(t.name(), "synapse_rank");
         assert!(t.description().contains("PageRank"));
+    }
+
+    #[test]
+    fn dead_code_tool_metadata() {
+        let t = DeadCodeTool;
+        assert_eq!(t.name(), "synapse_dead_code");
+        assert!(t.description().contains("dead code") || t.description().contains("zero callers"));
     }
 
     #[test]

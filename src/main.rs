@@ -1,4 +1,5 @@
 pub mod chunker;
+pub mod dead_code;
 pub mod embed;
 pub mod embedder;
 pub mod file_utils;
@@ -240,6 +241,24 @@ enum Commands {
         #[arg(short, long)]
         verbose: bool,
     },
+    /// Find dead code — functions/methods with zero callers
+    DeadCode {
+        /// Maximum number of results to show
+        #[arg(short, long, default_value = "50")]
+        top: usize,
+
+        /// Filter by kind: Function or Method
+        #[arg(long)]
+        kind: Option<String>,
+
+        /// Output format: table, markdown, json
+        #[arg(long, default_value = "table")]
+        format: String,
+
+        /// Path to the LadybugDB database storage file
+        #[arg(short, long, default_value = "synapse.lbug")]
+        db: PathBuf,
+    },
     /// Start a Model Context Protocol (MCP) server over stdio for AI agents
     Mcp {
         /// Print a one-line status report for every indexed repo and exit.
@@ -374,6 +393,17 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::DeadCode {
+            top,
+            kind,
+            format,
+            db,
+        } => {
+            if let Err(err) = handle_dead_code(&db, top, kind.as_deref(), &format) {
+                eprintln!("Error: {}", err);
+                std::process::exit(1);
+            }
+        }
         Commands::Watch {
             path,
             db,
@@ -444,6 +474,34 @@ fn handle_impact(
             }
             Err(e) => Err(Box::new(e) as Box<dyn Error>),
         }
+    })
+}
+
+fn handle_dead_code(
+    db_path: &Path,
+    top: usize,
+    kind: Option<&str>,
+    format: &str,
+) -> Result<(), Box<dyn Error>> {
+    use crate::dead_code::{entry_point_patterns, find_dead_code, DeadCodeOptions};
+    use crate::impact::{load_incoming_calls, load_symbol_rows};
+
+    with_db(db_path, |conn| {
+        let symbols = load_symbol_rows(conn)?;
+        let incoming = load_incoming_calls(conn)?;
+
+        let opts = DeadCodeOptions {
+            top: Some(top),
+            kind: kind.map(|s| s.to_string()),
+        };
+
+        let dead = find_dead_code(&symbols, &incoming, &opts);
+        let patterns = entry_point_patterns();
+
+        let qf = QueryFormat::parse(format)?;
+        qf.render_dead_code(&dead, &patterns, &mut std::io::stdout())?;
+
+        Ok(())
     })
 }
 

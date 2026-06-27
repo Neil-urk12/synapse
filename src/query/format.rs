@@ -380,14 +380,8 @@ impl QueryFormat {
                     writeln!(writer, "\nNo dead code found.")?;
                 } else {
                     writeln!(writer)?;
-                    writeln!(
-                        writer,
-                        "| File | Line | Kind | Name | PageRank |"
-                    )?;
-                    writeln!(
-                        writer,
-                        "|------|------|------|------|----------|"
-                    )?;
+                    writeln!(writer, "| File | Line | Kind | Name | PageRank |")?;
+                    writeln!(writer, "|------|------|------|------|----------|")?;
                     for r in rows {
                         writeln!(
                             writer,

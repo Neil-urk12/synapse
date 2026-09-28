@@ -63,28 +63,8 @@ impl Default for ImpactOptions {
     }
 }
 
-/// One row of the impact result: a symbol reachable from the target via
-/// reverse CALLS reachability, annotated with depth and PageRank.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct ImpactRow {
-    /// 1-based rank in the final sorted output (set after sort/truncate).
-    pub rank: usize,
-    /// Symbol id (`file_path::name` or `parent_id::name`).
-    pub id: String,
-    /// Bare symbol name (last segment of `id`).
-    pub name: String,
-    /// Symbol kind (Function, Method, Struct, etc.).
-    pub kind: String,
-    /// First segment of `id` — the file the symbol lives in.
-    pub file: String,
-    /// Start line in the source file.
-    pub start_line: usize,
-    /// Shortest path length from the target symbol. Direct callers = 1.
-    pub depth: usize,
-    /// PageRank score at the time of query. `None` if the column is unset
-    /// (pre-PageRank DB) — those rows sort to the bottom of the result.
-    pub pagerank: Option<f64>,
-}
+use crate::query::error::{CandidateItem, QueryError};
+pub use crate::types::query::ImpactRow;
 
 /// One row of symbol metadata loaded from the DB. `impact` needs a superset
 /// of `SymbolInfo` (it also carries `pagerank`), so it has its own type.
@@ -297,6 +277,41 @@ pub fn run_impact(
     let mut result = compute_impact(&resolved_id, &incoming, &rows, opts);
     sort_and_rank(&mut result, opts);
     Ok(result)
+}
+
+/// Query symbols transitively affected by changes to a target symbol.
+pub fn query_impact(
+    conn: &Connection,
+    target: &str,
+    fuzzy: bool,
+    opts: &ImpactOptions,
+) -> Result<Vec<ImpactRow>, QueryError> {
+    run_impact(conn, target, fuzzy, opts).map_err(|e| match e {
+        ImpactError::NoMatch {
+            target: t,
+            suggestions,
+        } => {
+            if suggestions.is_empty() {
+                QueryError::NotFound(t)
+            } else {
+                QueryError::Ambiguous {
+                    target: t,
+                    candidates: suggestions
+                        .into_iter()
+                        .map(|name| {
+                            let file = name.split("::").next().unwrap_or(&name).to_string();
+                            CandidateItem {
+                                name,
+                                file,
+                                line: 0,
+                            }
+                        })
+                        .collect(),
+                }
+            }
+        }
+        ImpactError::Io(e) => QueryError::Database(e.to_string()),
+    })
 }
 
 #[cfg(test)]

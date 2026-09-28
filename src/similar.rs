@@ -3,58 +3,10 @@
 #![allow(clippy::print_stdout)]
 
 use crate::embedder;
-use lbug::{Connection, Database, SystemConfig, Value};
+use lbug::{Connection, Database, SystemConfig};
 use std::path::Path;
 
-#[derive(Debug, Clone)]
-pub struct ScoredChunk {
-    pub id: String,
-    pub text: String,
-    pub language: String,
-    pub score: f32,
-}
-
-/// Extract ScoredChunks from a query result, converting distance to similarity.
-/// Filters by threshold — chunks below the threshold are excluded.
-pub fn scored_chunks_from_result(result: lbug::QueryResult, threshold: f32) -> Vec<ScoredChunk> {
-    let mut scored = Vec::new();
-    for row in result {
-        let id = match row.first() {
-            Some(Value::String(s)) => s.clone(),
-            _ => continue,
-        };
-        let text = match row.get(1) {
-            Some(Value::String(s)) => s.clone(),
-            _ => continue,
-        };
-        let language = match row.get(2) {
-            Some(Value::String(s)) => s.clone(),
-            _ => continue,
-        };
-        // Distance is stored as `INT64` in LadybugDB but the cosine
-        // threshold (`threshold: f32` in main) is a float. The actual
-        // distance values written by `similar.rs::write_embeddings` are
-        // small non-negative `f32` values stored as `INT64` via their
-        // bit representation, so the loss is bounded and the conversion
-        // is intentional.
-        #[allow(clippy::cast_precision_loss)]
-        let distance = match row.get(3) {
-            Some(Value::Float(f)) => *f,
-            Some(Value::Int64(i)) => *i as f32,
-            _ => continue,
-        };
-        let similarity = 1.0 - distance;
-        if similarity >= threshold {
-            scored.push(ScoredChunk {
-                id,
-                text,
-                language,
-                score: similarity,
-            });
-        }
-    }
-    scored
-}
+pub use crate::query::similar::{query_similar, scored_chunks_from_result, ScoredChunk};
 
 /// Render scored chunks as a JSON string.
 pub fn format_scored_json(scored: &[ScoredChunk]) -> Result<String, Box<dyn std::error::Error>> {

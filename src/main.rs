@@ -1,9 +1,7 @@
 pub mod chunker;
-pub mod dead_code;
 pub mod embed;
 pub mod embedder;
 pub mod file_utils;
-pub mod impact;
 pub mod index;
 pub mod linker;
 pub mod mcp;
@@ -12,12 +10,15 @@ pub mod parser;
 pub mod post_index;
 pub mod processor;
 pub mod query;
-pub mod rank;
 pub mod resolver;
 pub mod schema;
 pub mod similar;
 pub mod types;
 pub mod watch;
+
+pub use query::dead_code;
+pub use query::impact;
+pub use query::rank;
 
 use clap::{Parser, Subcommand};
 use lbug::{Connection, Database, SystemConfig};
@@ -365,7 +366,7 @@ fn main() {
             threshold,
             format,
         } => {
-            if let Err(err) = similar::handle_similar(&query, &db, limit, threshold, &format) {
+            if let Err(err) = handle_similar(&query, &db, limit, threshold, &format) {
                 eprintln!("Error: {}", err);
                 std::process::exit(1);
             }
@@ -376,7 +377,7 @@ fn main() {
             kind,
             format,
         } => {
-            if let Err(err) = rank::handle_rank(&db, top, kind.as_deref(), &format) {
+            if let Err(err) = handle_rank(&db, top, kind.as_deref(), &format) {
                 eprintln!("Error: {}", err);
                 std::process::exit(1);
             }
@@ -453,6 +454,35 @@ where
     f(&conn)
 }
 
+fn handle_similar(
+    query_str: &str,
+    db_path: &Path,
+    limit: usize,
+    threshold: f32,
+    format: &str,
+) -> Result<(), Box<dyn Error>> {
+    with_db(db_path, |conn| {
+        let chunks = crate::query::query_similar(conn, query_str, limit, threshold)?;
+        let qf = QueryFormat::parse(format)?;
+        qf.render_similar(query_str, &chunks, &mut std::io::stdout())?;
+        Ok(())
+    })
+}
+
+fn handle_rank(
+    db_path: &Path,
+    top: usize,
+    kind: Option<&str>,
+    format: &str,
+) -> Result<(), Box<dyn Error>> {
+    with_db(db_path, |conn| {
+        let items = crate::query::query_rank(conn, top, kind)?;
+        let qf = QueryFormat::parse(format)?;
+        qf.render_rank(&items, &mut std::io::stdout())?;
+        Ok(())
+    })
+}
+
 fn handle_impact(
     symbol: &str,
     db_path: &Path,
@@ -460,20 +490,15 @@ fn handle_impact(
     max_depth: Option<usize>,
     format: &str,
 ) -> Result<(), Box<dyn Error>> {
-    use crate::impact::{run_impact, ImpactOptions};
     with_db(db_path, |conn| {
-        let opts = ImpactOptions {
+        let opts = crate::query::ImpactOptions {
             max_depth,
             top: Some(top),
         };
-        match run_impact(conn, symbol, true, &opts) {
-            Ok(rows) => {
-                let qf = QueryFormat::parse(format)?;
-                qf.render_impact(symbol, &rows, &mut std::io::stdout())?;
-                Ok(())
-            }
-            Err(e) => Err(Box::new(e) as Box<dyn Error>),
-        }
+        let rows = crate::query::query_impact(conn, symbol, true, &opts)?;
+        let qf = QueryFormat::parse(format)?;
+        qf.render_impact(symbol, &rows, &mut std::io::stdout())?;
+        Ok(())
     })
 }
 
@@ -483,24 +508,11 @@ fn handle_dead_code(
     kind: Option<&str>,
     format: &str,
 ) -> Result<(), Box<dyn Error>> {
-    use crate::dead_code::{entry_point_patterns, find_dead_code, DeadCodeOptions};
-    use crate::impact::{load_incoming_calls, load_symbol_rows};
-
     with_db(db_path, |conn| {
-        let symbols = load_symbol_rows(conn)?;
-        let incoming = load_incoming_calls(conn)?;
-
-        let opts = DeadCodeOptions {
-            top: Some(top),
-            kind: kind.map(|s| s.to_string()),
-        };
-
-        let dead = find_dead_code(&symbols, &incoming, &opts);
-        let patterns = entry_point_patterns();
-
+        let report = crate::query::query_dead_code(conn, top, kind)?;
+        let patterns: Vec<&str> = report.excluded_by_name.iter().map(AsRef::as_ref).collect();
         let qf = QueryFormat::parse(format)?;
-        qf.render_dead_code(&dead, &patterns, &mut std::io::stdout())?;
-
+        qf.render_dead_code(&report.dead_code, &patterns, &mut std::io::stdout())?;
         Ok(())
     })
 }

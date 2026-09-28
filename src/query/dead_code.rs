@@ -1,6 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::impact::SymbolRow;
+use lbug::Connection;
+
+use crate::query::error::QueryError;
+use crate::query::impact::{load_incoming_calls, load_symbol_rows, SymbolRow};
+pub use crate::types::query::{DeadCodeReport, DeadCodeRow};
 
 /// Options for dead code detection.
 #[derive(Debug, Clone)]
@@ -20,21 +24,28 @@ impl Default for DeadCodeOptions {
     }
 }
 
-/// One row of dead code detected by `find_dead_code`.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct DeadCodeRow {
-    /// Symbol id (`file_path::name` or `parent_id::name`).
-    pub id: String,
-    /// Bare symbol name (last segment of `id`).
-    pub name: String,
-    /// Symbol kind (Function, Method).
-    pub kind: String,
-    /// First segment of `id` — the file the symbol lives in.
-    pub file: String,
-    /// Start line in the source file.
-    pub start_line: usize,
-    /// PageRank score at the time of query.
-    pub pagerank: Option<f64>,
+/// Query dead code — functions/methods with zero incoming CALLS edges.
+pub fn query_dead_code(
+    conn: &Connection,
+    top: usize,
+    kind: Option<&str>,
+) -> Result<DeadCodeReport, QueryError> {
+    let symbols = load_symbol_rows(conn).map_err(|e| QueryError::Database(e.to_string()))?;
+    let incoming = load_incoming_calls(conn).map_err(|e| QueryError::Database(e.to_string()))?;
+    let opts = DeadCodeOptions {
+        top: Some(top),
+        kind: kind.map(ToString::to_string),
+    };
+    let dead = find_dead_code(&symbols, &incoming, &opts);
+    let patterns = entry_point_patterns()
+        .into_iter()
+        .map(ToString::to_string)
+        .collect();
+    Ok(DeadCodeReport {
+        count: dead.len(),
+        dead_code: dead,
+        excluded_by_name: patterns,
+    })
 }
 
 /// Exact-match entry point names that should never be reported as dead.

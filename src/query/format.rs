@@ -1,5 +1,7 @@
-use crate::impact::ImpactRow;
-use crate::types::query::{CallerInfo, ContextPayload, FileInfo, SymbolInfo};
+use crate::types::query::{
+    CallerInfo, ContextPayload, DeadCodeRow, FileInfo, ImpactRow, RankItem, SimilarChunk,
+    SymbolInfo,
+};
 use std::io::Write;
 
 pub fn format_ascii_table(headers: &[String], rows: &[Vec<String>]) -> String {
@@ -361,7 +363,7 @@ impl QueryFormat {
     /// Render a dead code detection result.
     pub fn render_dead_code(
         &self,
-        rows: &[crate::dead_code::DeadCodeRow],
+        rows: &[DeadCodeRow],
         excluded_patterns: &[&str],
         writer: &mut dyn Write,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -436,6 +438,132 @@ impl QueryFormat {
                         "\nExcluded entry points: {}",
                         excluded_patterns.join(", ")
                     )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Render a PageRank symbol ranking result.
+    pub fn render_rank(
+        &self,
+        items: &[RankItem],
+        writer: &mut dyn Write,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        match self {
+            QueryFormat::Json => {
+                writeln!(writer, "{}", serde_json::to_string_pretty(items)?)?;
+            }
+            QueryFormat::Markdown => {
+                writeln!(writer, "# Top {} symbols by PageRank", items.len())?;
+                if items.is_empty() {
+                    writeln!(writer, "\nNo symbols with PageRank scores found.")?;
+                } else {
+                    writeln!(writer)?;
+                    writeln!(writer, "| Rank | Symbol | Kind | File | Score |")?;
+                    writeln!(writer, "|------|--------|------|------|-------|")?;
+                    for item in items {
+                        writeln!(
+                            writer,
+                            "| {} | `{}` | {} | `{}` | {:.4} |",
+                            item.rank, item.symbol, item.kind, item.file, item.score
+                        )?;
+                    }
+                }
+            }
+            QueryFormat::Table => {
+                if items.is_empty() {
+                    writeln!(writer, "No symbols with PageRank scores found.")?;
+                } else {
+                    let headers = vec![
+                        "Rank".to_string(),
+                        "Symbol".to_string(),
+                        "Kind".to_string(),
+                        "File".to_string(),
+                        "Score".to_string(),
+                    ];
+                    let table_rows: Vec<Vec<String>> = items
+                        .iter()
+                        .map(|r| {
+                            vec![
+                                r.rank.to_string(),
+                                r.symbol.clone(),
+                                r.kind.clone(),
+                                r.file.clone(),
+                                format!("{:.4}", r.score),
+                            ]
+                        })
+                        .collect();
+                    writeln!(writer, "{}", format_ascii_table(&headers, &table_rows))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Render semantic similarity search results.
+    pub fn render_similar(
+        &self,
+        query: &str,
+        items: &[SimilarChunk],
+        writer: &mut dyn Write,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        match self {
+            QueryFormat::Json => {
+                let results: Vec<serde_json::Value> = items
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "chunk_id": s.chunk_id,
+                            "score": s.score,
+                            "language": s.language,
+                            "source_code": s.text,
+                            "file_path": s.file_path,
+                            "start_line": s.start_line,
+                        })
+                    })
+                    .collect();
+                writeln!(writer, "{}", serde_json::to_string_pretty(&results)?)?;
+            }
+            QueryFormat::Markdown => {
+                writeln!(writer, "# Similar to: \"{}\"\n", query)?;
+                if items.is_empty() {
+                    writeln!(writer, "No similar chunks found above threshold.")?;
+                } else {
+                    for s in items {
+                        writeln!(writer, "## {} (Score: {:.2})", s.chunk_id, s.score)?;
+                        let extension = s.language.to_lowercase();
+                        writeln!(writer, "```{}\n{}\n```\n", extension, s.text)?;
+                    }
+                }
+            }
+            QueryFormat::Table => {
+                if items.is_empty() {
+                    writeln!(writer, "No similar chunks found above threshold.")?;
+                } else {
+                    let headers = vec![
+                        "Chunk ID".to_string(),
+                        "Language".to_string(),
+                        "Score".to_string(),
+                        "Location".to_string(),
+                    ];
+                    let table_rows: Vec<Vec<String>> = items
+                        .iter()
+                        .map(|c| {
+                            let loc = if c.start_line > 0 {
+                                format!("{}:{}", c.file_path, c.start_line)
+                            } else {
+                                c.file_path.clone()
+                            };
+                            vec![
+                                c.chunk_id.clone(),
+                                c.language.clone(),
+                                format!("{:.2}", c.score),
+                                loc,
+                            ]
+                        })
+                        .collect();
+                    writeln!(writer, "{}", format_ascii_table(&headers, &table_rows))?;
                 }
             }
         }

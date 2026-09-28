@@ -28,6 +28,30 @@ pub enum McpToolError {
     NotFound(String),
     #[error("internal error: {0}")]
     Internal(String),
+    #[error("'{0}' matches multiple candidates")]
+    Ambiguous(String, Vec<Value>),
+}
+
+impl From<crate::query::QueryError> for McpToolError {
+    fn from(e: crate::query::QueryError) -> Self {
+        match e {
+            crate::query::QueryError::NotFound(name) => {
+                McpToolError::NotFound(format!("no symbol matches '{name}'"))
+            }
+            crate::query::QueryError::Ambiguous { target, candidates } => {
+                let candidates_val: Vec<Value> = candidates
+                    .into_iter()
+                    .map(|c| serde_json::to_value(c).unwrap_or_default())
+                    .collect();
+                McpToolError::Ambiguous(target, candidates_val)
+            }
+            crate::query::QueryError::InvalidInput(msg)
+            | crate::query::QueryError::NotEmbedded(msg) => McpToolError::InvalidParams(msg),
+            crate::query::QueryError::Database(msg) | crate::query::QueryError::Embedder(msg) => {
+                McpToolError::Internal(msg)
+            }
+        }
+    }
 }
 
 pub struct ToolRegistry {
@@ -132,5 +156,31 @@ mod tests {
         reg.register(Box::new(StubTool2));
         let names: Vec<_> = reg.list().into_iter().map(|(n, _)| n).collect();
         assert_eq!(names, vec!["alpha", "stub"]);
+    }
+
+    #[test]
+    fn from_query_error_mappings() {
+        let err = crate::query::QueryError::NotFound("foo".into());
+        let mcp_err: McpToolError = err.into();
+        assert!(matches!(mcp_err, McpToolError::NotFound(_)));
+
+        let err = crate::query::QueryError::Ambiguous {
+            target: "bar".into(),
+            candidates: vec![crate::query::CandidateItem {
+                name: "bar".into(),
+                file: "bar.rs".into(),
+                line: 10,
+            }],
+        };
+        let mcp_err: McpToolError = err.into();
+        assert!(matches!(mcp_err, McpToolError::Ambiguous(_, _)));
+
+        let err = crate::query::QueryError::NotEmbedded("not embedded".into());
+        let mcp_err: McpToolError = err.into();
+        assert!(matches!(mcp_err, McpToolError::InvalidParams(_)));
+
+        let err = crate::query::QueryError::Database("db fail".into());
+        let mcp_err: McpToolError = err.into();
+        assert!(matches!(mcp_err, McpToolError::Internal(_)));
     }
 }

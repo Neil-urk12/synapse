@@ -80,6 +80,7 @@ pub struct CallGraphResult {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DependenciesResult {
     pub file: String,
+    pub language: String,
     pub imports: Vec<String>,
     pub imported_by: Vec<String>,
 }

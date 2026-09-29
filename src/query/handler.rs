@@ -136,7 +136,7 @@ pub fn query_call_graph(
     exact: bool,
     direction: Direction,
 ) -> Result<CallGraphResult, QueryError> {
-    let target = resolve_one_symbol(conn, symbol, exact, !exact)?;
+    let target = resolve_one_symbol(conn, symbol, exact, true)?;
     let edges: Vec<CallerInfo> = match direction {
         Direction::Callers => {
             fetch_callers(conn, &target.id).map_err(|e| QueryError::Database(e.to_string()))?
@@ -167,6 +167,7 @@ pub fn query_dependencies(
         fetch_imported_by(conn, &target.path).map_err(|e| QueryError::Database(e.to_string()))?;
     Ok(DependenciesResult {
         file: target.path,
+        language: target.language,
         imports,
         imported_by,
     })
@@ -283,8 +284,8 @@ pub fn run_dependencies(
         Err(e) => return Err(Box::new(e) as Box<dyn Error>),
     };
     let target = FileInfo {
-        path: result.file.clone(),
-        language: String::new(),
+        path: result.file,
+        language: result.language,
     };
     format.render_dependencies(&target, &result.imports, &result.imported_by, writer)
 }
@@ -363,6 +364,22 @@ mod tests {
     }
 
     #[test]
+    fn test_exact_call_graph_rejects_duplicate_names() {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("test_exact_call_graph.lbug");
+        let db = Database::new(&db_path, SystemConfig::default()).unwrap();
+        let conn = Connection::new(&db).unwrap();
+        setup_test_db(&conn);
+        conn.query("CREATE (:Symbol {id: 'src/main.rs::parse', name: 'parse', kind: 'Function', start_line: 30, start_col: 1, end_line: 35, signature: 'fn parse()', raw_calls: '[]'})").unwrap();
+
+        let err = query_call_graph(&conn, "parse", true, Direction::Callers).unwrap_err();
+        assert!(matches!(err, QueryError::Ambiguous { candidates, .. } if candidates.len() == 2));
+        let result =
+            query_call_graph(&conn, "src/parser.rs::parse", true, Direction::Callers).unwrap();
+        assert_eq!(result.target.id, "src/parser.rs::parse");
+    }
+
+    #[test]
     fn test_query_dependencies_typed() {
         let tmp = tempdir().unwrap();
         let db_path = tmp.path().join("test_deps_typed.lbug");
@@ -372,6 +389,7 @@ mod tests {
 
         let deps = query_dependencies(&conn, "main.rs", false).unwrap();
         assert_eq!(deps.file, "src/main.rs");
+        assert_eq!(deps.language, "Rust");
         assert_eq!(deps.imports, vec!["src/parser.rs"]);
         assert!(deps.imported_by.is_empty());
     }
@@ -482,6 +500,8 @@ mod tests {
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("\"imports\""));
         assert!(s.contains("\"imported_by\""));
+        let json: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(json["target"]["language"], "Rust");
     }
 
     #[test]

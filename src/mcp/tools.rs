@@ -38,6 +38,13 @@ impl From<crate::query::QueryError> for McpToolError {
             crate::query::QueryError::NotFound(name) => {
                 McpToolError::NotFound(format!("no symbol matches '{name}'"))
             }
+            crate::query::QueryError::NotFoundWithSuggestions {
+                target,
+                suggestions,
+            } => McpToolError::NotFound(format!(
+                "no symbol matches '{target}'. Did you mean: {}",
+                suggestions.join(", ")
+            )),
             crate::query::QueryError::Ambiguous { target, candidates } => {
                 let candidates_val: Vec<Value> = candidates
                     .into_iter()
@@ -163,6 +170,15 @@ mod tests {
         let err = crate::query::QueryError::NotFound("foo".into());
         let mcp_err: McpToolError = err.into();
         assert!(matches!(mcp_err, McpToolError::NotFound(_)));
+
+        let err = crate::query::QueryError::NotFoundWithSuggestions {
+            target: "foo".into(),
+            suggestions: vec!["src/a.rs::foo".into()],
+        };
+        let mcp_err: McpToolError = err.into();
+        assert!(
+            matches!(mcp_err, McpToolError::NotFound(message) if message.contains("src/a.rs::foo"))
+        );
 
         let err = crate::query::QueryError::Ambiguous {
             target: "bar".into(),

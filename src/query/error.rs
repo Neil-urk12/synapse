@@ -15,6 +15,12 @@ pub enum QueryError {
     #[error("No match found for '{0}'")]
     NotFound(String),
 
+    #[error("No match found for '{target}'. Did you mean: {}", suggestions.join(", "))]
+    NotFoundWithSuggestions {
+        target: String,
+        suggestions: Vec<String>,
+    },
+
     #[error("'{target}' matches multiple candidates")]
     Ambiguous {
         target: String,

@@ -63,7 +63,7 @@ impl Default for ImpactOptions {
     }
 }
 
-use crate::query::error::{CandidateItem, QueryError};
+use crate::query::error::QueryError;
 pub use crate::types::query::ImpactRow;
 
 /// One row of symbol metadata loaded from the DB. `impact` needs a superset
@@ -294,19 +294,9 @@ pub fn query_impact(
             if suggestions.is_empty() {
                 QueryError::NotFound(t)
             } else {
-                QueryError::Ambiguous {
+                QueryError::NotFoundWithSuggestions {
                     target: t,
-                    candidates: suggestions
-                        .into_iter()
-                        .map(|name| {
-                            let file = name.split("::").next().unwrap_or(&name).to_string();
-                            CandidateItem {
-                                name,
-                                file,
-                                line: 0,
-                            }
-                        })
-                        .collect(),
+                    suggestions,
                 }
             }
         }
@@ -618,6 +608,17 @@ mod integration_tests {
             let err = res.unwrap_err();
             let msg = err.to_string();
             assert!(msg.contains("not found"), "actual: {}", msg);
+        });
+    }
+
+    #[test]
+    fn test_query_impact_suggestions_remain_not_found() {
+        with_conn(|conn| {
+            conn.query("CREATE (:Symbol {id: 'src/a.rs::foo', name: 'foo', kind: 'Function', start_line: 1, end_line: 5, signature: 'fn foo()', raw_calls: '[]', pagerank: 0.10})").unwrap();
+            let err = query_impact(conn, "a.rs", true, &ImpactOptions::default()).unwrap_err();
+            assert!(
+                matches!(err, QueryError::NotFoundWithSuggestions { target, suggestions } if target == "a.rs" && suggestions == ["src/a.rs::foo"])
+            );
         });
     }
 

@@ -81,6 +81,34 @@ pub fn handle_embed(
     let mut embedded = 0usize;
     let mut skipped = 0usize;
 
+    let mut flush = |batch_ids: &mut Vec<String>,
+                     batch_texts: &mut Vec<String>,
+                     embedded: &mut usize,
+                     skipped: usize|
+     -> Result<(), Box<dyn std::error::Error>> {
+        let embeddings = model.embed(batch_texts)?;
+        for (i, emb) in embeddings.iter().enumerate() {
+            let lbug_list = Value::List(
+                lbug::LogicalType::Float,
+                emb.iter().map(|&f| Value::Float(f)).collect(),
+            );
+            conn.execute(
+                &mut update_stmt,
+                vec![
+                    ("id", Value::String(batch_ids[i].clone())),
+                    ("embedding", lbug_list),
+                ],
+            )?;
+            *embedded += 1;
+        }
+        if let Some(ref pb) = pb {
+            pb.set_position((*embedded + skipped) as u64);
+        }
+        batch_ids.clear();
+        batch_texts.clear();
+        Ok(())
+    };
+
     for row in result {
         let (id, text, needs_embed) = match (row.first(), row.get(1), row.get(2)) {
             (Some(Value::String(id)), Some(Value::String(text)), embedding_val) => {
@@ -110,52 +138,12 @@ pub fn handle_embed(
         }
 
         if batch_ids.len() >= batch_size {
-            // Inline flush to avoid borrowed-local lifetimes
-            let embeddings = model.embed(&batch_texts)?;
-            for (i, emb) in embeddings.iter().enumerate() {
-                let lbug_list = Value::List(
-                    lbug::LogicalType::Float,
-                    emb.iter().map(|&f| Value::Float(f)).collect(),
-                );
-                conn.execute(
-                    &mut update_stmt,
-                    vec![
-                        ("id", Value::String(batch_ids[i].clone())),
-                        ("embedding", lbug_list),
-                    ],
-                )?;
-                embedded += 1;
-            }
-            if let Some(ref pb) = pb {
-                pb.set_position((embedded + skipped) as u64);
-            }
-            batch_ids.clear();
-            batch_texts.clear();
+            flush(&mut batch_ids, &mut batch_texts, &mut embedded, skipped)?;
         }
     }
 
-    // Final flush
     if !batch_ids.is_empty() {
-        let embeddings = model.embed(&batch_texts)?;
-        for (i, emb) in embeddings.iter().enumerate() {
-            let lbug_list = Value::List(
-                lbug::LogicalType::Float,
-                emb.iter().map(|&f| Value::Float(f)).collect(),
-            );
-            conn.execute(
-                &mut update_stmt,
-                vec![
-                    ("id", Value::String(batch_ids[i].clone())),
-                    ("embedding", lbug_list),
-                ],
-            )?;
-            embedded += 1;
-        }
-        if let Some(ref pb) = pb {
-            pb.set_position((embedded + skipped) as u64);
-        }
-        batch_ids.clear();
-        batch_texts.clear();
+        flush(&mut batch_ids, &mut batch_texts, &mut embedded, skipped)?;
     }
 
     if let Some(pb) = pb {

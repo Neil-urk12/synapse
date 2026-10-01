@@ -17,7 +17,7 @@ pub fn compute_sha256(path: &Path) -> io::Result<String> {
         hasher.update(&buffer[..count]);
     }
 
-    Ok(hex::encode(hasher.finalize()))
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// Extract source code lines from a file's content string.
@@ -61,6 +61,16 @@ pub fn detect_language(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_sha256_known_digest() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), b"abc").unwrap();
+        assert_eq!(
+            compute_sha256(file.path()).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 
     #[test]
     fn test_slice_source_code() {

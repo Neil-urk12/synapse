@@ -23,7 +23,7 @@ use crate::mcp::tools::{McpTool, McpToolError};
 /// to `f`. Mirrors the `with_db` helper in `main.rs` but returns `Result<R, McpToolError>`
 /// directly. `Connection` borrows from `Database`, so the closure pattern
 /// keeps both alive for the duration of the work.
-fn with_conn<F, R>(db_path: &Path, f: F) -> Result<R, McpToolError>
+pub(super) fn with_conn<F, R>(db_path: &Path, f: F) -> Result<R, McpToolError>
 where
     F: FnOnce(&Connection) -> Result<R, McpToolError>,
 {

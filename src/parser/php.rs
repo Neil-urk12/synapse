@@ -16,24 +16,12 @@ impl LanguageParser for PhpParser {
             .set_language(&tree_sitter_php::language_php())
             .is_err()
         {
-            return FileAnalysis {
-                nodes,
-                edges,
-                imports,
-                calls,
-            };
+            return FileAnalysis::empty();
         }
         crate::parser::apply_timeout(&mut parser);
         let tree = match parser.parse(content, None) {
             Some(t) => t,
-            None => {
-                return FileAnalysis {
-                    nodes,
-                    edges,
-                    imports,
-                    calls,
-                }
-            }
+            None => return FileAnalysis::empty(),
         };
         let source_bytes = content.as_bytes();
 
@@ -187,7 +175,11 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                 }
             }
         }
-        "function_definition" => {
+        "function_definition"
+        | "method_declaration"
+        | "class_declaration"
+        | "interface_declaration"
+        | "trait_declaration" => {
             let name = if let Some(name_node) = node.child_by_field_name("name") {
                 name_node
                     .utf8_text(ctx.source)
@@ -203,160 +195,19 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                 format!("{}::{}", ctx.file_path, name)
             };
 
+            let kind_label = match kind {
+                "function_definition" => "Function",
+                "method_declaration" => "Method",
+                "class_declaration" => "Class",
+                "interface_declaration" => "Interface",
+                _ => "Trait",
+            };
             let signature = extract_signature(node, ctx.source);
 
             ctx.nodes.push(NodeData {
                 id: symbol_id.clone(),
                 name,
-                kind: "Function".to_owned(),
-                start_line: start_point.row + 1,
-                start_col: start_point.column + 1,
-                end_line: end_point.row + 1,
-                signature,
-            });
-
-            let from_id = active_parent.as_deref().unwrap_or(ctx.file_path).to_owned();
-            ctx.edges.push(EdgeData {
-                from_id,
-                to_id: symbol_id.clone(),
-                edge_type: "CONTAINS".to_owned(),
-            });
-
-            active_parent = Some(symbol_id);
-        }
-        "method_declaration" => {
-            let name = if let Some(name_node) = node.child_by_field_name("name") {
-                name_node
-                    .utf8_text(ctx.source)
-                    .unwrap_or("anonymous")
-                    .to_owned()
-            } else {
-                "anonymous".to_owned()
-            };
-
-            let symbol_id = if let Some(ref parent) = active_parent {
-                format!("{}::{}", parent, name)
-            } else {
-                format!("{}::{}", ctx.file_path, name)
-            };
-
-            let signature = extract_signature(node, ctx.source);
-
-            ctx.nodes.push(NodeData {
-                id: symbol_id.clone(),
-                name,
-                kind: "Method".to_owned(),
-                start_line: start_point.row + 1,
-                start_col: start_point.column + 1,
-                end_line: end_point.row + 1,
-                signature,
-            });
-
-            let from_id = active_parent.as_deref().unwrap_or(ctx.file_path).to_owned();
-            ctx.edges.push(EdgeData {
-                from_id,
-                to_id: symbol_id.clone(),
-                edge_type: "CONTAINS".to_owned(),
-            });
-
-            active_parent = Some(symbol_id);
-        }
-        "class_declaration" => {
-            let name = if let Some(name_node) = node.child_by_field_name("name") {
-                name_node
-                    .utf8_text(ctx.source)
-                    .unwrap_or("anonymous")
-                    .to_owned()
-            } else {
-                "anonymous".to_owned()
-            };
-
-            let symbol_id = if let Some(ref parent) = active_parent {
-                format!("{}::{}", parent, name)
-            } else {
-                format!("{}::{}", ctx.file_path, name)
-            };
-
-            let signature = extract_signature(node, ctx.source);
-
-            ctx.nodes.push(NodeData {
-                id: symbol_id.clone(),
-                name,
-                kind: "Class".to_owned(),
-                start_line: start_point.row + 1,
-                start_col: start_point.column + 1,
-                end_line: end_point.row + 1,
-                signature,
-            });
-
-            let from_id = active_parent.as_deref().unwrap_or(ctx.file_path).to_owned();
-            ctx.edges.push(EdgeData {
-                from_id,
-                to_id: symbol_id.clone(),
-                edge_type: "CONTAINS".to_owned(),
-            });
-
-            active_parent = Some(symbol_id);
-        }
-        "interface_declaration" => {
-            let name = if let Some(name_node) = node.child_by_field_name("name") {
-                name_node
-                    .utf8_text(ctx.source)
-                    .unwrap_or("anonymous")
-                    .to_owned()
-            } else {
-                "anonymous".to_owned()
-            };
-
-            let symbol_id = if let Some(ref parent) = active_parent {
-                format!("{}::{}", parent, name)
-            } else {
-                format!("{}::{}", ctx.file_path, name)
-            };
-
-            let signature = extract_signature(node, ctx.source);
-
-            ctx.nodes.push(NodeData {
-                id: symbol_id.clone(),
-                name,
-                kind: "Interface".to_owned(),
-                start_line: start_point.row + 1,
-                start_col: start_point.column + 1,
-                end_line: end_point.row + 1,
-                signature,
-            });
-
-            let from_id = active_parent.as_deref().unwrap_or(ctx.file_path).to_owned();
-            ctx.edges.push(EdgeData {
-                from_id,
-                to_id: symbol_id.clone(),
-                edge_type: "CONTAINS".to_owned(),
-            });
-
-            active_parent = Some(symbol_id);
-        }
-        "trait_declaration" => {
-            let name = if let Some(name_node) = node.child_by_field_name("name") {
-                name_node
-                    .utf8_text(ctx.source)
-                    .unwrap_or("anonymous")
-                    .to_owned()
-            } else {
-                "anonymous".to_owned()
-            };
-
-            let symbol_id = if let Some(ref parent) = active_parent {
-                format!("{}::{}", parent, name)
-            } else {
-                format!("{}::{}", ctx.file_path, name)
-            };
-
-            let signature = extract_signature(node, ctx.source);
-
-            ctx.nodes.push(NodeData {
-                id: symbol_id.clone(),
-                name,
-                kind: "Trait".to_owned(),
+                kind: kind_label.to_owned(),
                 start_line: start_point.row + 1,
                 start_col: start_point.column + 1,
                 end_line: end_point.row + 1,
@@ -429,12 +280,32 @@ function helper() {
         let path = Path::new("test.php");
         let FileAnalysis {
             nodes,
-            edges: _,
+            edges,
             imports,
             calls,
         } = ASTParser::parse_file(path, code);
 
         assert!(!nodes.is_empty(), "PHP nodes should not be empty");
+        assert_eq!(
+            nodes.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
+            [
+                "test.php::UserController",
+                "test.php::UserController::index",
+                "test.php::UserController::validate",
+                "test.php::CacheInterface",
+                "test.php::CacheInterface::get",
+                "test.php::Cacheable",
+                "test.php::Cacheable::cacheKey",
+                "test.php::helper",
+            ]
+        );
+        assert_eq!(edges.len(), nodes.len());
+        for node in &nodes {
+            let (parent, _) = node.id.rsplit_once("::").unwrap();
+            assert!(edges
+                .iter()
+                .any(|e| e.from_id == parent && e.to_id == node.id && e.edge_type == "CONTAINS"));
+        }
         assert!(imports.iter().any(|i| i.path == "config.php"));
         assert!(imports.iter().any(|i| i.path == "App\\User"));
 

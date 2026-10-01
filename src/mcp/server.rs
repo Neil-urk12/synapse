@@ -114,7 +114,7 @@ impl ServerHandler for McpServer {
         match tokio::time::timeout(self.tool_timeout, invoke_fut).await {
             Ok(Ok(value)) => Ok(CallToolResult::structured(value)),
             Ok(Err(tool_err)) => {
-                let error_data = map_domain_error(anyhow::Error::new(tool_err));
+                let error_data = map_domain_error(tool_err);
                 Err(error_data)
             }
             Err(_) => Err(McpError::internal_error(
@@ -246,7 +246,7 @@ impl ServerHandler for McpServer {
 
 /// Convert internal `McpToolError` (from resource reads) to rmcp's `ErrorData`.
 fn domain_to_mcp_error(err: McpToolError) -> McpError {
-    map_domain_error(anyhow::Error::new(err))
+    map_domain_error(err)
 }
 
 // ─── Entry points ─────────────────────────────────────────────────────────

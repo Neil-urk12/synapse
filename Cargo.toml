@@ -15,7 +15,6 @@ ignore = "0.4"
 
 # Fast cryptographic hashing for incremental updates
 sha2 = "0.10"
-hex = "0.4"
 
 # File system event watching
 notify = "8.0"
@@ -56,13 +55,6 @@ serde_json = "1.0"
 
 # Error enum derives for the MCP registry and other domain modules
 thiserror = "2"
-
-# Catch-all error type used at the MCP wire boundary. Lets `map_domain_error`
-# downcast through `McpToolError`, `RegistryError`, and `CandidateError` in
-# one chain. Internal code paths still use `thiserror`-typed enums and
-# `Box<dyn Error>` — anyhow is confined to `src/mcp/errors.rs` and the mcp
-# module's wire-layer error coercion.
-anyhow = "1"
 
 # Model Context Protocol server (stdio transport)
 rmcp = { version = "0.8", features = ["server", "macros", "transport-io"] }

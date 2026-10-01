@@ -13,24 +13,12 @@ impl LanguageParser for RubyParser {
 
         let mut parser = Parser::new();
         if parser.set_language(&tree_sitter_ruby::language()).is_err() {
-            return FileAnalysis {
-                nodes,
-                edges,
-                imports,
-                calls,
-            };
+            return FileAnalysis::empty();
         }
         crate::parser::apply_timeout(&mut parser);
         let tree = match parser.parse(content, None) {
             Some(t) => t,
-            None => {
-                return FileAnalysis {
-                    nodes,
-                    edges,
-                    imports,
-                    calls,
-                }
-            }
+            None => return FileAnalysis::empty(),
         };
         let source_bytes = content.as_bytes();
 

@@ -7,23 +7,12 @@
 use std::path::Path;
 use std::process::Command;
 
-use lbug::{Connection, Database, SystemConfig};
+use lbug::Connection;
 use serde_json::{json, Value};
 
 use crate::mcp::repo_registry::{is_stale as entry_is_stale, RepoRegistry};
+use crate::mcp::tool_impls::with_conn;
 use crate::mcp::tools::McpToolError;
-
-/// Open a fresh read-only connection to the repo's DB and run `f(conn)`.
-fn with_conn_for_db<F, R>(db_path: &Path, f: F) -> Result<R, McpToolError>
-where
-    F: FnOnce(&Connection) -> Result<R, McpToolError>,
-{
-    let db = Database::new(db_path, SystemConfig::default())
-        .map_err(|e| McpToolError::Internal(format!("open db '{}': {e}", db_path.display())))?;
-    let conn =
-        Connection::new(&db).map_err(|e| McpToolError::Internal(format!("open conn: {e}")))?;
-    f(&conn)
-}
 
 /// Read the `synapse://repos` resource: every registry entry enriched with
 /// `is_stale` (via `git rev-parse HEAD` comparison). Empty registry returns `[]`.
@@ -62,7 +51,7 @@ pub fn read_repo_status(name: &str) -> Result<Value, McpToolError> {
         || (!entry.indexed_commit.is_empty() && head_commit != entry.indexed_commit);
 
     let (files_count, symbols_count) = if entry.db_path.exists() {
-        with_conn_for_db(&entry.db_path, |conn| {
+        with_conn(&entry.db_path, |conn| {
             let files = count_query(conn, "MATCH (f:File) RETURN count(f) AS n")?;
             let symbols = count_query(conn, "MATCH (s:Symbol) RETURN count(s) AS n")?;
             Ok((files, symbols))

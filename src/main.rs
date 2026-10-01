@@ -12,7 +12,6 @@ pub mod processor;
 pub mod query;
 pub mod resolver;
 pub mod schema;
-pub mod similar;
 pub mod types;
 pub mod watch;
 
@@ -275,136 +274,79 @@ enum Commands {
 
 fn main() {
     let cli = Cli::parse();
+    if let Err(err) = run_command(cli.command) {
+        eprintln!("Error: {}", err);
+        std::process::exit(1);
+    }
+}
 
-    match cli.command {
+fn run_command(command: Commands) -> Result<(), Box<dyn Error>> {
+    match command {
         Commands::Index {
             path,
             db: db_path,
             verbose,
             no_register,
             force_register,
-        } => {
-            if let Err(err) = index::run_index(path, db_path, verbose, no_register, force_register)
-            {
-                eprintln!("Error: {}", err);
-                std::process::exit(1);
-            }
-        }
-        Commands::Query { query, db } => {
-            if let Err(err) = query::handle_query(&query, &db) {
-                eprintln!("Error: {}", err);
-                std::process::exit(1);
-            }
-        }
+        } => index::run_index(path, db_path, verbose, no_register, force_register),
+        Commands::Query { query, db } => query::handle_query(&query, &db),
         Commands::Context {
             symbol,
             file,
             fuzzy,
             format,
             db,
-        } => {
-            if let Err(err) =
-                handle_context(symbol.as_deref(), file.as_deref(), fuzzy, &format, &db)
-            {
-                eprintln!("Error: {}", err);
-                std::process::exit(1);
-            }
-        }
+        } => handle_context(symbol.as_deref(), file.as_deref(), fuzzy, &format, &db),
         Commands::Callers {
             symbol,
             exact,
             format,
             db,
-        } => {
-            if let Err(err) = handle_callers(&symbol, exact, &format, &db) {
-                eprintln!("Error: {}", err);
-                std::process::exit(1);
-            }
-        }
+        } => handle_callers(&symbol, exact, &format, &db),
         Commands::Callees {
             symbol,
             exact,
             format,
             db,
-        } => {
-            if let Err(err) = handle_callees(&symbol, exact, &format, &db) {
-                eprintln!("Error: {}", err);
-                std::process::exit(1);
-            }
-        }
+        } => handle_callees(&symbol, exact, &format, &db),
         Commands::Dependencies {
             file,
             exact,
             format,
             db,
-        } => {
-            if let Err(err) = handle_dependencies(&file, exact, &format, &db) {
-                eprintln!("Error: {}", err);
-                std::process::exit(1);
-            }
-        }
-        Commands::Repl { db } => {
-            if let Err(err) = query::run_repl(&db) {
-                eprintln!("Error: {}", err);
-                std::process::exit(1);
-            }
-        }
+        } => handle_dependencies(&file, exact, &format, &db),
+        Commands::Repl { db } => query::run_repl(&db),
         Commands::Embed {
             db,
             batch_size,
             verbose,
-        } => {
-            if let Err(err) = embed::handle_embed(&db, batch_size, verbose) {
-                eprintln!("Error: {}", err);
-                std::process::exit(1);
-            }
-        }
+        } => embed::handle_embed(&db, batch_size, verbose),
         Commands::Similar {
             query,
             db,
             limit,
             threshold,
             format,
-        } => {
-            if let Err(err) = handle_similar(&query, &db, limit, threshold, &format) {
-                eprintln!("Error: {}", err);
-                std::process::exit(1);
-            }
-        }
+        } => handle_similar(&query, &db, limit, threshold, &format),
         Commands::Rank {
             db,
             top,
             kind,
             format,
-        } => {
-            if let Err(err) = handle_rank(&db, top, kind.as_deref(), &format) {
-                eprintln!("Error: {}", err);
-                std::process::exit(1);
-            }
-        }
+        } => handle_rank(&db, top, kind.as_deref(), &format),
         Commands::Impact {
             symbol,
             db,
             top,
             max_depth,
             format,
-        } => {
-            if let Err(err) = handle_impact(&symbol, &db, top, max_depth, &format) {
-                eprintln!("Error: {}", err);
-                std::process::exit(1);
-            }
-        }
+        } => handle_impact(&symbol, &db, top, max_depth, &format),
         Commands::DeadCode {
             top,
             kind,
             format,
             db,
-        } => {
-            if let Err(err) = handle_dead_code(&db, top, kind.as_deref(), &format) {
-                eprintln!("Error: {}", err);
-                std::process::exit(1);
-            }
-        }
+        } => handle_dead_code(&db, top, kind.as_deref(), &format),
         Commands::Watch {
             path,
             db,
@@ -412,6 +354,7 @@ fn main() {
             verbose,
         } => {
             watch::run_watch(&path, &db, debounce, verbose);
+            Ok(())
         }
         Commands::Mcp {
             status,
@@ -421,23 +364,11 @@ fn main() {
                 status,
                 tool_timeout_secs: tool_timeout,
             };
-            // The MCP server is async; build a small runtime in-process so
-            // the rest of `main()` stays synchronous. Falls back to
-            // `exit(1)` on any startup error (logged to stderr).
-            let rt = match tokio::runtime::Builder::new_multi_thread()
+            let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    eprintln!("Error: failed to build tokio runtime: {}", e);
-                    std::process::exit(1);
-                }
-            };
-            if let Err(err) = rt.block_on(crate::mcp::server::run(args)) {
-                eprintln!("Error: {}", err);
-                std::process::exit(1);
-            }
+                .map_err(|e| format!("failed to build tokio runtime: {e}"))?;
+            rt.block_on(crate::mcp::server::run(args))
         }
     }
 }

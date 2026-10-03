@@ -64,18 +64,16 @@ pub fn process_file(
         }));
     }
 
-    let (analysis, content) = match (language_from_path(abs_path), std::fs::File::open(abs_path)) {
-        (Some(_), Ok(mut file)) => {
-            let mut text = String::new();
-            match file.read_to_string(&mut text) {
-                Ok(_) => (
-                    Some(ASTParser::parse_file(Path::new(&relative_path), &text)),
-                    Some(text),
-                ),
-                Err(_) => (None, None),
-            }
-        }
-        _ => (None, None),
+    let (analysis, content) = if language_from_path(abs_path).is_some() {
+        let mut file = std::fs::File::open(abs_path)?;
+        let mut text = String::new();
+        file.read_to_string(&mut text)?;
+        (
+            Some(ASTParser::parse_file(Path::new(&relative_path), &text)),
+            Some(text),
+        )
+    } else {
+        (None, None)
     };
 
     Ok(Some(ParsedPayload {

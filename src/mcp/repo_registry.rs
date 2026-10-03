@@ -84,6 +84,15 @@ impl RepoRegistry {
         Ok(())
     }
 
+    /// Register a repository atomically: load the registry, add or update the
+    /// entry under the ``force`` policy, then persist with an atomic write.
+    pub fn register(entry: RepoEntry, force: bool) -> Result<(), RegistryError> {
+        let path = registry_path().ok_or(RegistryError::NoHome)?;
+        let mut registry = Self::load_from(&path)?;
+        registry.add_or_update(entry, force)?;
+        registry.save_to(&path)
+    }
+
     pub fn add_or_update(&mut self, entry: RepoEntry, force: bool) -> Result<(), RegistryError> {
         if let Some(position) = self.entries.iter().position(|e| e.path == entry.path) {
             if !force {

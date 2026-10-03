@@ -5,7 +5,7 @@ pub fn schema_ddls() -> Vec<&'static str> {
     vec![
         "CREATE NODE TABLE File (path STRING, language STRING, file_size INT64, hash STRING, raw_imports STRING, PRIMARY KEY (path))",
         "CREATE NODE TABLE Symbol (id STRING, name STRING, kind STRING, start_line INT64, start_col INT64, end_line INT64, signature STRING, raw_calls STRING, pagerank DOUBLE, PRIMARY KEY (id))",
-        "CREATE NODE TABLE Chunk (id STRING, text STRING, language STRING, embedding FLOAT[384], PRIMARY KEY (id))",
+        "CREATE NODE TABLE Chunk (id STRING, text STRING, language STRING, start_line INT64, embedding FLOAT[384], PRIMARY KEY (id))",
         "CREATE NODE TABLE IndexMetadata (id STRING, version INT64, repository_root STRING, graph_dirty BOOL, vector_dirty BOOL, PRIMARY KEY (id))",
         "CREATE REL TABLE CONTAINS (FROM File TO Symbol, FROM Symbol TO Symbol)",
         "CREATE REL TABLE IMPORTS (FROM File TO File)",

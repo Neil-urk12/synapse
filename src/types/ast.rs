@@ -66,4 +66,5 @@ pub struct CodeChunk {
     pub id: String,
     pub text: String,
     pub symbol_id: Option<String>,
+    pub start_line: usize,
 }

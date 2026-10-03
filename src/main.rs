@@ -14,6 +14,7 @@ pub mod query;
 pub mod resolver;
 pub mod schema;
 pub mod types;
+pub mod vector;
 pub mod watch;
 
 pub use query::dead_code;

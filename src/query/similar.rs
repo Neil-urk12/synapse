@@ -146,3 +146,94 @@ pub fn query_similar(
 
     Ok(chunks)
 }
+
+/// Run a raw vector search over the ``idx_chunk_vector`` index and enrich the
+/// surviving chunks with their owning file path and chunk start line.
+pub fn search_vector(
+    conn: &Connection,
+    vector: &[f32],
+    limit: usize,
+    threshold: f32,
+) -> Result<Vec<SimilarChunk>, QueryError> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn
+        .prepare(
+            "CALL QUERY_VECTOR_INDEX('Chunk', 'idx_chunk_vector', $vector, $limit)              YIELD node, distance RETURN node.id, node.text, node.language, distance              ORDER BY distance, node.id",
+        )
+        .map_err(|e| QueryError::Database(format!("vector query: {e}")))?;
+    let result = conn
+        .execute(
+            &mut stmt,
+            vec![
+                (
+                    "vector",
+                    Value::List(
+                        LogicalType::Float,
+                        vector.iter().copied().map(Value::Float).collect(),
+                    ),
+                ),
+                (
+                    "limit",
+                    Value::Int64(
+                        i64::try_from(limit)
+                            .map_err(|_| QueryError::InvalidInput("Limit is too large".into()))?,
+                    ),
+                ),
+            ],
+        )
+        .map_err(|e| QueryError::Database(format!("vector query: {e}")))?;
+    let scored = scored_chunks_from_result(result, threshold);
+    if scored.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Follow-up: pull file_path and start_line for each surviving chunk.
+    let chunk_ids: Vec<Value> = scored.iter().map(|s| Value::String(s.id.clone())).collect();
+    let id_list = Value::List(LogicalType::String, chunk_ids);
+    let lookup_query = "MATCH (c:Chunk) WHERE c.id IN $ids                         OPTIONAL MATCH (file:File)-[:DOCUMENTED_BY]->(c)                         RETURN c.id, file.path, c.start_line";
+    let mut lookup_stmt = conn
+        .prepare(lookup_query)
+        .map_err(|e| QueryError::Database(format!("prepare lookup: {e}")))?;
+    let lookup_result = conn
+        .execute(&mut lookup_stmt, vec![("ids", id_list)])
+        .map_err(|e| QueryError::Database(format!("lookup query: {e}")))?;
+
+    let mut location_by_chunk: HashMap<String, (String, i64)> = HashMap::new();
+    for row in lookup_result {
+        let id = match row.first() {
+            Some(Value::String(s)) => s.clone(),
+            _ => continue,
+        };
+        let file_path = match row.get(1) {
+            Some(Value::String(p)) => p.clone(),
+            _ => String::new(),
+        };
+        let start_line = match row.get(2) {
+            Some(Value::Int64(n)) => *n,
+            _ => 0,
+        };
+        location_by_chunk.insert(id, (file_path, start_line));
+    }
+
+    let chunks: Vec<SimilarChunk> = scored
+        .into_iter()
+        .map(|s| {
+            let (file_path, start_line) = location_by_chunk
+                .get(&s.id)
+                .cloned()
+                .unwrap_or((String::new(), 0));
+            SimilarChunk {
+                chunk_id: s.id,
+                text: s.text,
+                language: s.language,
+                score: s.score,
+                file_path,
+                start_line,
+            }
+        })
+        .collect();
+
+    Ok(chunks)
+}

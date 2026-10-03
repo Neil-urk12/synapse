@@ -21,6 +21,7 @@ pub fn chunk_source_with_options(
                 id: format!("{}::chunk::{}", path, idx),
                 text,
                 symbol_id: Some(node.id.clone()),
+                start_line: node.start_line,
             });
         }
         return chunks;
@@ -44,6 +45,7 @@ pub fn chunk_source_with_options(
             id: format!("{}::chunk::{}", path, idx),
             text,
             symbol_id: None,
+            start_line: start + 1,
         });
 
         idx += 1;
@@ -67,33 +69,29 @@ pub fn chunk_source_with_options(
     chunks
 }
 
+pub fn delete_chunks(conn: &Connection, file_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut stmt =
+        conn.prepare("MATCH (f:File {path: $path})-[:DOCUMENTED_BY]->(c:Chunk) DETACH DELETE c")?;
+    conn.execute(
+        &mut stmt,
+        vec![("path", Value::String(file_path.to_string()))],
+    )?;
+    Ok(())
+}
+
 pub fn insert_chunks(
     conn: &Connection,
     file_path: &str,
     language: &str,
     chunks: &[CodeChunk],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Cleanup old chunks
-    let mut prepared_delete_file_chunks =
-        conn.prepare("MATCH (f:File {path: $path})-[:DOCUMENTED_BY]->(c:Chunk) DETACH DELETE c")?;
-    conn.execute(
-        &mut prepared_delete_file_chunks,
-        vec![("path", Value::String(file_path.to_string()))],
-    )?;
-
-    let mut prepared_delete_symbol_chunks = conn.prepare(
-        "MATCH (f:File {path: $path})-[:CONTAINS*1..]->(s:Symbol)-[:DOCUMENTED_BY]->(c:Chunk) DETACH DELETE c"
-    )?;
-    conn.execute(
-        &mut prepared_delete_symbol_chunks,
-        vec![("path", Value::String(file_path.to_string()))],
-    )?;
+    delete_chunks(conn, file_path)?;
 
     // 2. Insert new chunks
     let mut prepared_chunk = conn.prepare(
         "MERGE (c:Chunk {id: $id}) \
-         ON CREATE SET c.text = $text, c.language = $language, c.embedding = $embedding \
-         ON MATCH SET c.text = $text, c.language = $language, c.embedding = $embedding",
+         ON CREATE SET c.text = $text, c.language = $language, c.start_line = $start_line, c.embedding = NULL \
+         ON MATCH SET c.text = $text, c.language = $language, c.start_line = $start_line, c.embedding = NULL",
     )?;
 
     let mut prepared_symbol_rel = conn.prepare(
@@ -106,14 +104,12 @@ pub fn insert_chunks(
          CREATE (f)-[:DOCUMENTED_BY]->(c)",
     )?;
 
-    let zero_embedding = Value::List(lbug::LogicalType::Float, vec![Value::Float(0.0); 384]);
-
     for chunk in chunks {
         let chunk_params = vec![
             ("id", Value::String(chunk.id.clone())),
             ("text", Value::String(chunk.text.clone())),
             ("language", Value::String(language.to_string())),
-            ("embedding", zero_embedding.clone()),
+            ("start_line", Value::Int64(i64::try_from(chunk.start_line)?)),
         ];
         conn.execute(&mut prepared_chunk, chunk_params)?;
 
@@ -123,13 +119,12 @@ pub fn insert_chunks(
                 ("to_id", Value::String(chunk.id.clone())),
             ];
             conn.execute(&mut prepared_symbol_rel, rel_params)?;
-        } else {
-            let rel_params = vec![
-                ("from_id", Value::String(file_path.to_string())),
-                ("to_id", Value::String(chunk.id.clone())),
-            ];
-            conn.execute(&mut prepared_file_rel, rel_params)?;
         }
+        let rel_params = vec![
+            ("from_id", Value::String(file_path.to_string())),
+            ("to_id", Value::String(chunk.id.clone())),
+        ];
+        conn.execute(&mut prepared_file_rel, rel_params)?;
     }
 
     Ok(())
@@ -154,7 +149,7 @@ mod tests {
         // Initialize schema (including Chunk and DOCUMENTED_BY)
         conn.query("CREATE NODE TABLE File (path STRING, language STRING, file_size INT64, hash STRING, raw_imports STRING, PRIMARY KEY (path))").unwrap();
         conn.query("CREATE NODE TABLE Symbol (id STRING, name STRING, kind STRING, start_line INT64, start_col INT64, end_line INT64, signature STRING, raw_calls STRING, PRIMARY KEY (id))").unwrap();
-        conn.query("CREATE NODE TABLE Chunk (id STRING, text STRING, language STRING, embedding FLOAT[384], PRIMARY KEY (id))").unwrap();
+        conn.query("CREATE NODE TABLE Chunk (id STRING, text STRING, language STRING, start_line INT64, embedding FLOAT[384], PRIMARY KEY (id))").unwrap();
         conn.query("CREATE REL TABLE DOCUMENTED_BY (FROM File TO Chunk, FROM Symbol TO Chunk)")
             .unwrap();
         conn.query("CREATE REL TABLE CONTAINS (FROM File TO Symbol, FROM Symbol TO Symbol)")
@@ -173,11 +168,13 @@ mod tests {
                 id: "src/main.rs::chunk::0".to_string(),
                 text: "fn main() {\n}".to_string(),
                 symbol_id: Some("src/main.rs::main".to_string()),
+                start_line: 1,
             },
             CodeChunk {
                 id: "src/main.rs::chunk::1".to_string(),
                 text: "// comment".to_string(),
                 symbol_id: None,
+                start_line: 11,
             },
         ];
 

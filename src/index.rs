@@ -89,8 +89,8 @@ pub fn write_payload_to_db(
             let symbol_calls: Vec<crate::types::ast::RawCall> = analysis
                 .calls
                 .iter()
-                .filter(|c| c.line >= node.start_line && c.line <= node.end_line)
-                .cloned()
+                .filter(|c| c.owner_symbol_id.as_deref() == Some(node.id.as_str()))
+                .map(|c| c.call.clone())
                 .collect();
             match serde_json::to_string(&symbol_calls) {
                 Ok(serialized) => raw_calls_str = serialized,

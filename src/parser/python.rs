@@ -32,6 +32,7 @@ impl LanguageParser for PythonParser {
             edges: &mut edges,
             imports: &mut imports,
             calls: &mut calls,
+            callable_owner: None,
         };
 
         traverse(tree.root_node(), &mut ctx, None);
@@ -46,6 +47,7 @@ impl LanguageParser for PythonParser {
 }
 
 fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<String>) {
+    let node_count = ctx.nodes.len();
     let kind = node.kind();
     let mut active_parent = current_parent_id;
     let start_point = node.start_position();
@@ -132,7 +134,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                         let is_valid = !method_name.is_empty()
                             && method_name.chars().all(|c| c.is_alphanumeric() || c == '_');
                         if is_valid {
-                            ctx.calls.push(RawCall {
+                            ctx.record_call(RawCall {
                                 name: method_name,
                                 line: start_point.row + 1,
                                 is_method: true,
@@ -143,7 +145,7 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
                     let is_valid =
                         !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
                     if is_valid {
-                        ctx.calls.push(RawCall {
+                        ctx.record_call(RawCall {
                             name,
                             line: start_point.row + 1,
                             is_method: false,
@@ -240,10 +242,19 @@ fn traverse(node: Node, ctx: &mut TraverseContext, current_parent_id: Option<Str
         _ => {}
     }
 
+    let declaration = ctx.nodes.get(node_count).cloned();
     let mut cursor = node.walk();
     if cursor.goto_first_child() {
         loop {
+            let inherited = ctx.callable_owner.clone();
+            ctx.callable_owner = crate::parser::child_callable_owner(
+                node,
+                cursor.node(),
+                declaration.as_ref(),
+                inherited.clone(),
+            );
             traverse(cursor.node(), ctx, active_parent.clone());
+            ctx.callable_owner = inherited;
             if !cursor.goto_next_sibling() {
                 break;
             }

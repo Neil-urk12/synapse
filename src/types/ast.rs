@@ -12,11 +12,24 @@ pub struct RawCall {
 }
 
 #[derive(Debug, Clone)]
+pub struct OwnedCall {
+    pub owner_symbol_id: Option<String>,
+    pub call: RawCall,
+}
+
+impl std::ops::Deref for OwnedCall {
+    type Target = RawCall;
+    fn deref(&self) -> &RawCall {
+        &self.call
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct FileAnalysis {
     pub nodes: Vec<NodeData>,
     pub edges: Vec<EdgeData>,
     pub imports: Vec<RawImport>,
-    pub calls: Vec<RawCall>,
+    pub calls: Vec<OwnedCall>,
 }
 
 impl FileAnalysis {

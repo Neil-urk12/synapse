@@ -2,6 +2,8 @@ pub mod cpp;
 pub mod go;
 pub mod java_kotlin;
 pub mod javascript;
+#[cfg(test)]
+mod ownership_tests;
 pub mod php;
 pub mod python;
 pub mod ruby;
@@ -28,7 +30,7 @@ pub fn apply_timeout(parser: &mut tree_sitter::Parser) {
     parser.set_timeout_micros(PARSE_TIMEOUT_MICROS);
 }
 
-use crate::types::ast::{EdgeData, FileAnalysis, NodeData, RawCall, RawImport};
+use crate::types::ast::{EdgeData, FileAnalysis, NodeData, OwnedCall, RawCall, RawImport};
 use std::path::Path;
 use tree_sitter::Node;
 
@@ -110,7 +112,77 @@ pub struct TraverseContext<'a> {
     pub nodes: &'a mut Vec<NodeData>,
     pub edges: &'a mut Vec<EdgeData>,
     pub imports: &'a mut Vec<RawImport>,
-    pub calls: &'a mut Vec<RawCall>,
+    pub calls: &'a mut Vec<OwnedCall>,
+    pub callable_owner: Option<String>,
+}
+
+impl TraverseContext<'_> {
+    pub fn record_call(&mut self, call: RawCall) {
+        self.calls.push(OwnedCall {
+            owner_symbol_id: self.callable_owner.clone(),
+            call,
+        });
+    }
+}
+
+/// Callable ownership follows bodies, independently of declaration containment.
+pub fn child_callable_owner(
+    parent: Node,
+    child: Node,
+    declaration: Option<&NodeData>,
+    inherited: Option<String>,
+) -> Option<String> {
+    let is_body = parent
+        .child_by_field_name("body")
+        .is_some_and(|body| body.id() == child.id())
+        || matches!(
+            child.kind(),
+            "function_body" | "constructor_body" | "body_statement"
+        )
+        || (parent.kind() == "lambda_literal" && child.kind() == "statements");
+    if let Some(declaration) = declaration {
+        if matches!(
+            declaration.kind.as_str(),
+            "Function" | "Method" | "Constructor"
+        ) {
+            return if is_body {
+                Some(declaration.id.clone())
+            } else {
+                inherited
+            };
+        }
+        return if is_body
+            || matches!(
+                child.kind(),
+                "class_body"
+                    | "enum_body"
+                    | "interface_body"
+                    | "declaration_list"
+                    | "field_declaration_list"
+            ) {
+            None
+        } else {
+            inherited
+        };
+    }
+    if matches!(
+        parent.kind(),
+        "arrow_function"
+            | "function_expression"
+            | "lambda"
+            | "lambda_expression"
+            | "closure_expression"
+            | "func_literal"
+            | "anonymous_function_creation_expression"
+            | "anonymous_function"
+            | "lambda_literal"
+            | "block"
+            | "do_block"
+    ) && is_body
+    {
+        return None;
+    }
+    inherited
 }
 
 pub fn extract_signature(node: Node, source: &[u8]) -> String {

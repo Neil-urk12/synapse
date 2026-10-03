@@ -154,7 +154,7 @@ pub fn query_call_graph(
     })
 }
 
-/// Execute a dependency query, listing imports and imported-by files for a target file.
+/// Traverse callers by shortest depth and deterministic call-site witnesses.
 pub fn query_dependencies(
     conn: &Connection,
     file: &str,
@@ -231,12 +231,19 @@ pub fn query_context(
     }
 
     if let Some(ref path_str) = file_path_to_read {
-        if let Ok(content) = std::fs::read_to_string(path_str) {
-            source_code = match line_range {
-                Some((start, end)) => crate::file_utils::slice_source_code(&content, start, end),
-                None => content,
-            };
-        }
+        let root = crate::database::repository_root(conn)
+            .map_err(|e| QueryError::InvalidInput(e.to_string()))?;
+        let path = root.join(path_str);
+        let content = std::fs::read_to_string(&path).map_err(|e| {
+            QueryError::InvalidInput(format!(
+                "Cannot read indexed source '{}': {e}",
+                path.display()
+            ))
+        })?;
+        source_code = match line_range {
+            Some((start, end)) => crate::file_utils::slice_source_code(&content, start, end),
+            None => content,
+        };
     }
 
     Ok(ContextPayload {
@@ -316,7 +323,24 @@ mod tests {
     use lbug::{Connection, Database, SystemConfig};
     use tempfile::tempdir;
 
-    fn setup_test_db(conn: &Connection) {
+    fn setup_test_db(conn: &Connection) -> tempfile::TempDir {
+        let source = tempdir().unwrap();
+        std::fs::create_dir(source.path().join("src")).unwrap();
+        std::fs::write(
+            source.path().join("src/main.rs"),
+            format!("{}fn main() {{\n  parse();\n}}\n", "\n".repeat(9)),
+        )
+        .unwrap();
+        conn.query("CREATE NODE TABLE IndexMetadata (id STRING, version INT64, repository_root STRING, graph_dirty BOOL, vector_dirty BOOL, PRIMARY KEY (id))").unwrap();
+        let mut stmt = conn.prepare("CREATE (:IndexMetadata {id: 'index', version: 1, repository_root: $root, graph_dirty: false, vector_dirty: true})").unwrap();
+        conn.execute(
+            &mut stmt,
+            vec![(
+                "root",
+                Value::String(source.path().to_string_lossy().into_owned()),
+            )],
+        )
+        .unwrap();
         conn.query(
             "CREATE NODE TABLE File(path STRING, language STRING, file_size INT64, hash STRING, raw_imports STRING, PRIMARY KEY(path))"
         ).unwrap();
@@ -341,6 +365,7 @@ mod tests {
             .unwrap();
         conn.query("MATCH (s1:Symbol {id: 'src/main.rs::main'}), (s2:Symbol {id: 'src/parser.rs::parse'}) CREATE (s1)-[:CALLS {call_site_line: 12}]->(s2)")
             .unwrap();
+        source
     }
 
     #[test]
@@ -349,7 +374,7 @@ mod tests {
         let db_path = tmp.path().join("test_cg_typed.lbug");
         let db = Database::new(&db_path, SystemConfig::default()).unwrap();
         let conn = Connection::new(&db).unwrap();
-        setup_test_db(&conn);
+        let _source = setup_test_db(&conn);
 
         let callers = query_call_graph(&conn, "parse", false, Direction::Callers).unwrap();
         assert_eq!(callers.target.id, "src/parser.rs::parse");
@@ -369,7 +394,7 @@ mod tests {
         let db_path = tmp.path().join("test_exact_call_graph.lbug");
         let db = Database::new(&db_path, SystemConfig::default()).unwrap();
         let conn = Connection::new(&db).unwrap();
-        setup_test_db(&conn);
+        let _source = setup_test_db(&conn);
         conn.query("CREATE (:Symbol {id: 'src/main.rs::parse', name: 'parse', kind: 'Function', start_line: 30, start_col: 1, end_line: 35, signature: 'fn parse()', raw_calls: '[]'})").unwrap();
 
         let err = query_call_graph(&conn, "parse", true, Direction::Callers).unwrap_err();
@@ -385,7 +410,7 @@ mod tests {
         let db_path = tmp.path().join("test_deps_typed.lbug");
         let db = Database::new(&db_path, SystemConfig::default()).unwrap();
         let conn = Connection::new(&db).unwrap();
-        setup_test_db(&conn);
+        let _source = setup_test_db(&conn);
 
         let deps = query_dependencies(&conn, "main.rs", false).unwrap();
         assert_eq!(deps.file, "src/main.rs");
@@ -400,7 +425,7 @@ mod tests {
         let db_path = tmp.path().join("test_ctx_typed.lbug");
         let db = Database::new(&db_path, SystemConfig::default()).unwrap();
         let conn = Connection::new(&db).unwrap();
-        setup_test_db(&conn);
+        let _source = setup_test_db(&conn);
 
         let ctx = query_context(&conn, Some("main"), None, false).unwrap();
         assert_eq!(ctx.symbol.unwrap().name, "main");
@@ -414,7 +439,7 @@ mod tests {
         let db_path = tmp.path().join("test_handler_callgraph.lbug");
         let db = Database::new(&db_path, SystemConfig::default()).unwrap();
         let conn = Connection::new(&db).unwrap();
-        setup_test_db(&conn);
+        let _source = setup_test_db(&conn);
 
         let mut out = Vec::new();
         run_call_graph(
@@ -450,7 +475,7 @@ mod tests {
         let db_path = tmp.path().join("test_handler_callgraph_json.lbug");
         let db = Database::new(&db_path, SystemConfig::default()).unwrap();
         let conn = Connection::new(&db).unwrap();
-        setup_test_db(&conn);
+        let _source = setup_test_db(&conn);
 
         let mut out = Vec::new();
         run_call_graph(
@@ -487,7 +512,7 @@ mod tests {
         let db_path = tmp.path().join("test_handler_deps.lbug");
         let db = Database::new(&db_path, SystemConfig::default()).unwrap();
         let conn = Connection::new(&db).unwrap();
-        setup_test_db(&conn);
+        let _source = setup_test_db(&conn);
 
         let mut out = Vec::new();
         run_dependencies(&conn, "main.rs", false, QueryFormat::Table, &mut out).unwrap();
@@ -510,7 +535,7 @@ mod tests {
         let db_path = tmp.path().join("test_handler_context.lbug");
         let db = Database::new(&db_path, SystemConfig::default()).unwrap();
         let conn = Connection::new(&db).unwrap();
-        setup_test_db(&conn);
+        let _source = setup_test_db(&conn);
 
         let mut out = Vec::new();
         run_context(
@@ -533,7 +558,7 @@ mod tests {
         let db_path = tmp.path().join("test_handler_context_both.lbug");
         let db = Database::new(&db_path, SystemConfig::default()).unwrap();
         let conn = Connection::new(&db).unwrap();
-        setup_test_db(&conn);
+        let _source = setup_test_db(&conn);
 
         let mut out = Vec::new();
         let res = run_context(
@@ -557,7 +582,7 @@ mod tests {
         let db_path = tmp.path().join("test_handler_context_neither.lbug");
         let db = Database::new(&db_path, SystemConfig::default()).unwrap();
         let conn = Connection::new(&db).unwrap();
-        setup_test_db(&conn);
+        let _source = setup_test_db(&conn);
 
         let mut out = Vec::new();
         let res = run_context(&conn, None, None, false, QueryFormat::Markdown, &mut out);

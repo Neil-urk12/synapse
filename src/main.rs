@@ -1,4 +1,5 @@
 pub mod chunker;
+pub mod database;
 pub mod embed;
 pub mod embedder;
 pub mod file_utils;
@@ -380,8 +381,9 @@ fn with_db<F>(db_path: &Path, f: F) -> Result<(), Box<dyn Error>>
 where
     F: FnOnce(&Connection) -> Result<(), Box<dyn Error>>,
 {
-    let db = Database::new(db_path, SystemConfig::default())?;
+    let db = Database::new(db_path, SystemConfig::default().read_only(true))?;
     let conn = Connection::new(&db)?;
+    database::repository_root(&conn)?;
     f(&conn)
 }
 
